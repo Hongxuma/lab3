@@ -1,4 +1,4 @@
-name = "Hongu Ma"
+name = "Hongxu Ma"
 SID = "26917597"
 email = "mahongxu@berkeley.edu"
 github_name = "Hongxuma"
