@@ -1,0 +1,487 @@
+---
+title: "Lab 1 - Redwood Data, Stat 215A, Fall 2017"
+author: "Hongxu Ma"
+date: "8/31/2017"
+output:
+  pdf_document:
+    number_sections: yes
+  html_document: default
+header-includes: \usepackage{float}
+---
+
+
+```{r setup, echo = FALSE, message=FALSE, warning=FALSE}
+# load in useful packages
+library(knitr)
+library(tidyverse)
+library(stringr)
+library(lubridate)
+library(dplyr)
+library(plotly)
+
+source("R/load.R")
+source("R/clean.R")
+```
+
+```{r load-data, echo = FALSE, message = FALSE, warning = FALSE, cache = TRUE}
+# note that the cache = TRUE chunk argument means that the results of this 
+# chunk are saved so it doesn't need to be re-run every time you compile the pdf
+
+# load the dates data
+dates_orig <- loadDatesData(path = "data/")
+# clean the dates data
+dates <- cleanDatesData(dates_orig)
+
+# load the redwood sensor data
+redwood_all_orig <- loadRedwoodData(path = "data/", source = "all")
+#redwood_net_orig <- loadRedwoodData(path = "data/", source = "net")
+#redwood_log_orig <- loadRedwoodData(path = "data/", source = "log")
+# clean the redwood sensor data
+
+```
+
+
+```{r echo = FALSE, message = FALSE, warning = FALSE, cache = TRUE}
+#data manipulation section
+#time stamps
+
+#recalculated the time stamp
+adate <- dates_orig[,2, drop = F]
+adate <- adate %>%
+  separate(date, c("de", "month", "day", "time", "year","t"), sep = " ") 
+ide = adate$day == ""
+adate[ide,3] = adate[ide,4]
+adate[ide,4] = adate[ide,5]
+adate[ide,5] = adate[ide,6]
+adate <- adate[,2:5]
+adate <- cbind(dates$number,adate)
+colnames(adate) <- c("epoch","month","day","time","year")
+adate <- separate(adate,time, c("hh","mm","ss"),":")
+adate <- adate[,1:5]
+adate[adate$month == "Apr",2] = 4
+adate[adate$month == "May",2] = 5
+adate[adate$month == "Jun",2] = 6
+
+#link the date and data
+redwood_all_orig$epoch <- factor(redwood_all_orig$epoch)
+redwood_all_orig <- left_join(redwood_all_orig, adate, by = "epoch")
+
+# add height, Direction, Distance and Tree info
+locationInfo <- read_table("data/mote-location-data.txt")
+names(locationInfo) <- c("a","b")
+locationInfo <- data.frame(do.call('rbind', strsplit(as.character(locationInfo$a),'\t',fixed=TRUE)))
+names(locationInfo) <- c("nodeid", "Height", "Direction", "Distance", "Tree")
+redwood_all_orig$nodeid <- factor(redwood_all_orig$nodeid)
+redwood_all_orig <- left_join(redwood_all_orig, locationInfo, by = "nodeid")
+
+#select the useful columns
+redwood_all_orig <- redwood_all_orig[,c(2:3,5,7:19)]
+#remove data that no longer use
+rm(dates)
+rm(adate)
+rm(dates_orig) 
+rm(redwood_log_orig)
+rm(redwood_net_orig)
+rm(ide)
+#remove functions that no longer use
+rm(cleanDatesData)
+rm(cleanRedwoodData)
+rm(loadDatesData)
+rm(loadMoteLocationData)
+rm(loadRedwoodData)
+```
+(PLEASE CHECK THE HTML VERSION FOR ANIMATION AND INTERACTIONS, THANK YOU SO MUCH!)
+
+# Introduction
+
+In this report, I analysis the data of temperature, relative humidity, incident photosynthetically active solar radiation(PAR) and reflected PAR from two trees from the redwood forest. The data measured in both spatial and temporal scales with high resolution in both scales. I clean the data according to the physical background and criteria from the paper. I find that the data strongly support the climate system in west coast ecosystem in Northern hemisphere. Such as, the solar radiation is higher in south side than that in north side, and the humidity is higher in west side than that in east side. I also find that temperature is negatively associated with humidity, and most importantly, the ratio of temperature to humidity change along with time in hour scale. This is majorly affected by the air flow from inland to coast during the sunset time period. I find that the PAR data may have some error when calculating the ratio of incident PAR to reflected PAR. The ratios are mostly perfect interger which is very abnormal and unreal in the real world observation.
+
+# The Data
+
+
+## Data Collection
+The data is collected via the wireless sensor network named macroscope by Tolle et al. They designed a divices collecting data on the environmental synamics around two 70 meters high redwood trees for 44 days. One tree is located on the edge of the redwood forest, while the other tree is located at the interior of the forest.
+
+72 divices are implemented on two trees. The devices measured and recorded the temperature, relative humidity, incident photosynthetically active solar radiation(PAR) and reflected PAR. The data is collected from Apr. 27th to Jun. 10th. The data is collected every 5 minutes. The voltage of the devices of each epoch are also recorded.
+
+
+## Data Cleaning
+
+1.Range cleaning
+
+According to the Table 1 in the paper (Tolle et al, 2005), the rows with temperature less than 6.6 Celsius or greater than 32.6 Celsius are deleted. The rows with relative humidity that less than 16.4% and greater than 100.2% are deleted. The rows with negative value in Incident PAR or Reflected PAR are all discarded, as well as the rows with incident PAR larger than 2154 or reflected PAR larger than 2000. I didn't follow the criteria from the paper strictly.
+
+2.Voltage cleaning
+
+According to the paper, the abnormal voltage cause the data measuring accuracy. They recommend to delete the rows with voltage less than 2.4 or greater than 3.0. Howerver, for most data collected for the network (denoted as redwood_net_orig) have voltage range around 220V. The criteria is not applicable to those data, which is about 25% of the whole data. So I divide the data according to the voltage range into two subset. One subset with voltage less than 10 will be trim by the criteria from the paper. The other subset with voltage greater than 10. From the figure below, we could easily eyeball there are two outlier clusters located around 0.5 and 1000. After deleted the outliers, we compare the distribution of two subset by ploting the histograms. The historgrams shows that the criteria range from 2.6 to 3.0 actually coverred 97% data with voltage ranging from 2.4 to 3.0.
+To keep the cleaning criteria consistent between two subsets, we pick up 97% data from the data with voltage ranging from 200 to 300, which is roughly range from 203 to 237.
+So, we will delete the data with voltage sit outside the range (2.6, 3.0) and range(203, 237).
+
+3.Time Stamps
+
+The resulting time in the raw data doesn't recorded the real time when the variables are measured. We need to find the real time according to epoch that linking to number in sonoma-dates files.
+
+```{r echo =FALSE}
+voltage.less10 <- subset(redwood_all_orig, voltage <10)
+voltage.greater10 <- subset(redwood_all_orig, voltage >10)
+#layout(matrix(c(1,2,3,4), 4, 1), 
+#  	widths= 0.2, heights= 1)
+par(mfrow=c(4,1), mar = rep(2,4)) 
+hist(voltage.less10$voltage)
+hist(voltage.greater10$voltage)
+voltage.10to300 <- subset(voltage.greater10, voltage < 300)
+voltage.2to4 <- subset(voltage.less10,voltage >2)
+hist(voltage.2to4$voltage)
+hist(voltage.10to300$voltage)
+```
+```{r echo=FALSE, message=FALSE}
+#data clean section
+#a<-redwood_all_orig
+#delete rows that contain NaN
+redwood_all_orig <- redwood_all_orig[complete.cases(redwood_all_orig), ]
+#delete rows that have negative humidity and temperature
+redwood_all_orig <- subset(redwood_all_orig,humidity>16.4 & humidity < 100.2)
+redwood_all_orig <- subset(redwood_all_orig,humid_temp>6.6 & humid_temp < 32.6)
+#delete rows that have extrme high radiation
+redwood_all_orig <-subset(redwood_all_orig,hamabot < 10000 & hamatop < 10000)
+
+redwood_all_orig <-subset(redwood_all_orig, voltage < 237 & voltage >= 2.6)
+redwood_all_orig <-subset(redwood_all_orig, voltage <=  3.0 | voltage >203)
+
+#convert the dates info to numeric
+redwood_all_orig$month <- as.numeric(redwood_all_orig$month)
+redwood_all_orig$day <- as.numeric(redwood_all_orig$day)
+redwood_all_orig$hh <- as.numeric(redwood_all_orig$hh)
+redwood_all_orig$mm <- as.numeric(redwood_all_orig$mm)
+redwood_all_orig$Height <- as.numeric(redwood_all_orig$Height)
+
+#divide the trees
+rd.edge <- redwood_all_orig[redwood_all_orig$Tree == "edge",]
+rd.in <- redwood_all_orig[redwood_all_orig$Tree == "interior",]
+```
+
+```{r echo=FALSE, message=FALSE}
+#plot the correlation 
+
+rd.edge.plot <- subset(rd.edge,hamatop >0 & hamabot >0)
+rd.in.plot <- subset(rd.in,hamatop >0 & hamabot >0)
+
+
+```
+## Data Exploration
+1. Is there any relationship between incident PAR and reflected PAR?
+
+Based on the physical understanding, an increase in incident PAR will cause an increase in relfected PAR. Meanwhile, the ratio of the increasement of incident PAR to relfected PAR could tell us more about the local environment. The high ratio represents the high radiation scattering ability, which is an idication of the ability and effectiveness of photosynthesis (Sivak et al. 1985; Rao et al. 1986). The ratio also reflect the dust concentration in the air, which indicate one of the major fertilization way in coast ecosystem (Meskhidze et al.2005).
+
+To better describe the correlation between incident PAR and reflected PAR, we only plot the data with non-zero ones.
+
+```{r echo=FALSE, message=FALSE}
+#Pattern finded between hamatop and hamabot
+plot_ly(rd.in.plot, x = ~hamatop, y = ~hamabot, color = ~humid_temp,
+         text = ~paste("Height: ", Height))
+```
+We could find a really interesting pattern between incident PAR and relfected PAR. The ratio of incident PAR to relfected PAR seem have some constant values. To exam if the constant relation is whether real or caused by errors, I plot all the data with PAR larger than 0, including the outliars we deleted at begining.
+To further check the ratio of incident PAR to relfected PAR.
+```{r echo=FALSE, message=FALSE}
+#Pattern finded between hamatop and hamabot
+rd.in.plot$ratio = rd.in.plot$hamatop/rd.in.plot$hamabot
+plot_ly(rd.in.plot, x = ~humid_temp, y = ~ratio, color = ~humid_temp,
+         text = ~paste("Height: ", voltage))
+```
+By ploting the ratio againest temperature, we could confidently say there are constant ratio of incident PAR to reflected PAR. However, limited by variables collected, we are not able to answer what dominant the ratio. 
+However, for the higher ratio that above 6, the ratio constant numbers are all intergers. 
+The perfect interger is very impossible exist in the real world, especially not only one by chance. This may refelect the devises errors.
+
+
+2.The relationship between temperature and humidity
+```{r echo=FALSE, message=FALSE,warning = FALSE}
+#relation between humidity and temperature
+plot_ly(rd.edge.plot, x = ~humidity, y = ~humid_temp, color = ~hh,
+         text = ~paste("Hours: ", hh))
+```
+
+The plots shows that humidity has a significant negative correlationship with temperature. There are two major clusters in this figure, one located at (temperature = 25, humidity = 40%), the other located at (temperature = 13, humidity = 80%). Interestingly, these two clusters are all formed by the data measured around 5 - 7 p.m., which is the sunset period. More details and discussions see Finding #1 section and Discussion #1 section.
+
+3. How direction of the motes affect the data
+
+As the redwood forest located near the ocean, the west side of the tree usually affect by the ocean fog more than the east side. Meanwhile, the instant radiation usually higher in south side than that in north side in Northern hemisphere. 
+```{r echo=FALSE, message=FALSE,warning = FALSE }
+rd.in.cm <- subset(rd.in, humid_temp <32)
+rd.edge.cm <- subset(rd.edge, humid_temp <32)
+
+
+rd.in.cm <- rd.in.cm %>%
+  group_by(Direction) %>%
+  dplyr::summarise(
+            mean_temp = mean(humid_temp), 
+            max_temp = max(humid_temp),
+            min_temp = min(humid_temp),
+            mean_humid = mean(humidity),
+            max_humid = max(humidity),
+            min_humid = min(humidity),
+            mean_hamatop = mean(hamatop),
+            max_hamatop = max(hamatop),
+            min_hamatop = min(hamatop),
+            mean_hamabot = mean(hamabot),
+            max_hamabot = max(hamabot),
+            min_hamabot = min(hamabot)
+            )
+
+#rd.in.cm <- rd.in.cm[c(1:4,6:9),]
+k <- c('N',0,0,0,0,0,0,0,0,0,0,0,0)
+for (i in 1:8) {
+  rd.in.cm = rbind(rd.in.cm,k)
+}
+rd.in.cm$rank = c(5,6,3,15,9,11,14,12,1,2,4,7,8,10,13,16)
+
+rd.in.cm <- rd.in.cm[order(rd.in.cm$rank),]
+rd.in.cm$dr = c("North","N-N-E","N-E","E-N-E","East","E-S-E","S-E","S-S-E","South","S-S-W","S-W","W-S-W","West","W-N-W","N-W","N-N-W")
+
+rd.in.cmt <- data.frame(rd.in.cm[,1]) 
+for (column in c(2:ncol(rd.in.cm))){
+  rd.in.cmt <- cbind(rd.in.cmt, rd.in.cm[,column])
+}
+rd.in.cmt$angle <- c(0,22.5,45,67.5,90,112.5,135,157.5,180,202.5,225,247.5,270,292.5,315,337.5)
+rd.in.cmt <- transform(rd.in.cmt, mean_temp = as.numeric(mean_temp), 
+               max_temp = as.numeric(max_temp),
+               min_temp = as.numeric(min_temp),
+               mean_humid = as.numeric(mean_humid),
+               max_humid = as.numeric(max_humid),
+               min_humid = as.numeric(min_humid),
+               mean_hamatop = as.numeric(mean_hamatop),
+               max_hamatop = as.numeric(max_hamatop),
+               min_hamatop = as.numeric(min_hamatop),
+               mean_hamabot = as.numeric(mean_hamabot),
+               max_hamabot = as.numeric(max_hamabot),
+               min_hamabot = as.numeric(min_hamabot),
+               dr = as.factor(dr))
+
+rd.in.cmt[1,2:13] = (rd.in.cmt[15,2:13] + rd.in.cmt[3,2:13])/2
+rd.in.cmt[7,2:13] = rd.in.cmt[6,2:13]
+rd.in.cmt[13,2:13] = (rd.in.cmt[12,2:13] + rd.in.cmt[14,2:13])/2
+
+rd.in.cmt <- rd.in.cmt[c(1,3,5,7,9,11,13,15),2:16]
+
+rd.edge.cm <- rd.edge.cm %>%
+  group_by(Direction) %>%
+  dplyr::summarise(
+            mean_temp = mean(humid_temp), 
+            max_temp = max(humid_temp),
+            min_temp = min(humid_temp),
+            mean_humid = mean(humidity),
+            max_humid = max(humidity),
+            min_humid = min(humidity),
+            mean_hamatop = mean(hamatop),
+            max_hamatop = max(hamatop),
+            min_hamatop = min(hamatop),
+            mean_hamabot = mean(hamabot),
+            max_hamabot = max(hamabot),
+            min_hamabot = min(hamabot)
+            )
+
+#rd.edge.cm <- rd.edge.cm[c(1:4,6:9),]
+for (i in 1:8) {
+  rd.edge.cm = rbind(rd.edge.cm,k)
+}
+rd.edge.cm$rank = c(5,6,3,15,9,11,14,12,1,2,4,7,8,10,13,16)
+
+rd.edge.cm <- rd.edge.cm[order(rd.edge.cm$rank),]
+rd.edge.cm$dr = c("North","N-N-E","N-E","E-N-E","East","E-S-E","S-E","S-S-E","South","S-S-W","S-W","W-S-W","West","W-N-W","N-W","N-N-W")
+
+rd.edge.cmt <- data.frame(rd.edge.cm[,1]) 
+for (column in c(2:ncol(rd.edge.cm))){
+  rd.edge.cmt <- cbind(rd.edge.cmt, rd.edge.cm[,column])
+}
+rd.edge.cmt$angle <- c(0,22.5,45,67.5,90,112.5,135,157.5,180,202.5,225,247.5,270,292.5,315,337.5)
+rd.edge.cmt <- transform(rd.edge.cmt, mean_temp = as.numeric(mean_temp), 
+               max_temp = as.numeric(max_temp),
+               min_temp = as.numeric(min_temp),
+               mean_humid = as.numeric(mean_humid),
+               max_humid = as.numeric(max_humid),
+               min_humid = as.numeric(min_humid),
+               mean_hamatop = as.numeric(mean_hamatop),
+               max_hamatop = as.numeric(max_hamatop),
+               min_hamatop = as.numeric(min_hamatop),
+               mean_hamabot = as.numeric(mean_hamabot),
+               max_hamabot = as.numeric(max_hamabot),
+               min_hamabot = as.numeric(min_hamabot),
+               dr = as.factor(dr))
+
+rd.edge.cmt[1,2:13] = (rd.edge.cmt[15,2:13] + rd.edge.cmt[3,2:13])/2
+rd.edge.cmt[7,2:13] = rd.edge.cmt[6,2:13]
+rd.edge.cmt[13,2:13] = (rd.edge.cmt[12,2:13] + rd.edge.cmt[14,2:13])/2
+
+rd.edge.cmt <- rd.edge.cmt[c(1,3,5,7,9,11,13,15),2:16]
+
+p <- plot_ly(rd.in.cmt, r = ~mean_hamabot, t = ~angle, alpha = 0.5) %>% add_area() %>%
+layout(radialaxis = list(ticksuffix = ""), title = "Mean Reflect PAR - Interior", orientation = 270,  width = 480, height = 500)
+
+pe <- plot_ly(rd.edge.cmt, r = ~mean_hamabot, t = ~angle, alpha = 0.5) %>% add_area() %>%
+layout(radialaxis = list(ticksuffix = ""), title = "Mean Reflect PAR", orientation = 270,  width = 480, height = 500)
+pe
+
+
+
+```
+
+
+
+The figure also suggest that south side received much more radiation than the north side. The difference between west side and east side is not significant.
+
+# Graphical Critique
+For figure 3(a), they try to describe what the distribution and the range of each variables. For incident PAR and Reflected PAR, I think it could be better to narrow the bins to support their arugment that PARs are bimodal distributed.
+For figure 3(b), they are trying to describe how the data change along with time. With a line delineate the trends will helps a lot. Meanwhile, the figures only describe how the data change along with time in day scale. It is also important to know how the data change in hour scale. Check finding 2 section for further details and discussion.
+For figure 3(c), they are trying to describe how data change along with height. To answer the question for PAR, it is also know how the data change for non-zero data. Because the zero in PAR mostly measured during the night, which doesn't help with understanding the photosysthesis process. People will be curious how the data change in day time.
+For firgure 3(d), they are trying to describe how the distribution of measurements away from the mean change along with height. But people will also curious that distribution of PAR looks like in day time with non-zero data.
+For firgure 4. The trends of temperature and humidity is intuitive and full of information. But the trends of PAR doesn't tell much. It would be great to describe the trends of PAR by using data from a short time range instead of just a single time point.
+
+# Findings
+
+
+## First finding
+
+The ratio of temperature to humidity around the sunset time period is highly donimated by inland air supply.
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+#relation between humidity and temperature
+rd.in.plot$ratio = rd.in.plot$humid_temp/rd.in.plot$humidity
+
+rd.in.plot %>%
+plot_ly( x = ~hh, y = ~ratio, color = ~humid_temp,
+         text = ~paste("Hour: ", hh)) %>%
+  layout(xaxis = list(title="Hour"), yaxis = list(title = "Ratio(T/Humidity)"), title = "How the ratio of Temperature to Humidity changes along with time of the day")
+```
+
+Figure Finding #1
+
+This figure describe how the ratio of temperature to humidity changes along with time of the day. The x-axis is the hour of the day ranging from 0 to 24. The y axis is the ratio. The color represent the temperature. Further details see discussion section.
+
+
+## Second finding
+
+How temperatue change along with height and time in hour scale
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+#plot slide
+rd.in.lh <- subset(rd.in, humid_temp <32)
+rd.edge.lh <- subset(rd.edge, humid_temp <32)
+rd.in.lh <- rd.in.lh %>%
+  group_by(hh,nodeid) %>%
+  dplyr::summarise(
+            mean_temp = mean(humid_temp), 
+            max_temp = max(humid_temp),
+            min_temp = min(humid_temp),
+            mean_humid = mean(humidity),
+            max_humid = max(humidity),
+            min_humid = min(humidity)
+            )
+rd.edge.lh <- rd.edge %>%
+  group_by(hh,nodeid) %>%
+  dplyr::summarise(
+            mean_temp = mean(humid_temp), 
+            max_temp = max(humid_temp),
+            min_temp = min(humid_temp),
+            mean_humid = mean(humidity),
+            max_humid = max(humidity),
+            min_humid = min(humidity)
+            )
+
+rd.in.lh <- left_join(rd.in.lh, locationInfo, by = "nodeid")
+rd.edge.lh <- left_join(rd.edge.lh, locationInfo, by = "nodeid") 
+rd.in.lh <- rd.in.lh[order(rd.in.lh$Height),]
+rd.edge.lh <- rd.edge.lh[order(rd.edge.lh$Height),]
+
+#temp
+p <- rd.in.lh %>%
+  plot_ly(
+    x = ~mean_temp, 
+    y = ~Height,
+    frame = ~hh,
+    type = 'scatter', 
+    #mode = 'makers', 
+    name = 'Mean Temperature',
+    fill = 'tozerox',
+    fillcolor='rgba(114, 186, 59, 0.5)',
+    line = list(color = 'rgb(114, 186, 59)'),
+    text = ~paste("Hour: ", hh, "<br>mean_humidity: ", mean_humid), 
+    hoverinfo = 'text'
+  ) %>%
+  add_trace(x = ~max_temp, y = ~Height, name = 'Max Temperature', fill = 'tozerox',
+            fillcolor = 'rgba(255, 212, 96, 0.5)') %>%
+  add_trace(x = ~min_temp, y = ~Height, name = 'Min Temperature', fill = 'tozerox',
+            fillcolor = 'rgba(255, 100, 96, 0.5)') %>%
+  layout(
+    title = "How Temperature and its structure change in 24 hours",
+    yaxis = list(
+      title = "Height", 
+      range = c(0,80), 
+      zeroline = F,
+      tickprefix = "",
+      showgrid = F
+    ),
+    xaxis = list(
+      title = "Temperature", 
+      #range = c(50,90), 
+      zeroline = F 
+    )
+  ) %>% 
+  animation_opts(
+    frame = 500, 
+    transition = 10, 
+    redraw = F
+  ) %>%
+  animation_slider(
+    currentvalue = list(
+      prefix = "Hour "
+    )
+  )
+p
+```
+Figure Finding #2
+This figure describe how the temperature and its spatial structure change along with time in hour scale. The x-axis is temperature and the y-axis is height of the motes. 
+Please check the html file for interactings. You can click "Play" button to see the animation. You may also slide the bar on the bottom to check the hour you are interested in. 
+Further details see discussion #2
+
+## Third finding
+How humidity change along with direction and location of the trees.
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+k <- c(rep("interio",8))
+t1 <- cbind(rd.in.cmt,k)
+k <- c(rep("edge",8))
+t2 <- cbind(rd.edge.cmt,k)
+test <- rbind(t1,t2)
+pp <- plot_ly(test, r = ~mean_humid, t = ~angle, alpha = 0.5)%>% add_area(color = ~k) %>%
+layout(radialaxis = list(ticksuffix = ""), title = "Mean Humidity", orientation = 270,  width = 490, height = 480,plot_bgcolor = toRGB("grey90"))
+pp
+
+
+```
+
+Figure Finding #3
+This figure shows how humidity change along with direction. The number on the edge of the circle represents the degree different to North in clockwise direction. So the 0 represents North and 90 represents East. The light green region represents the interior tree and the light blue region is the data from tree located at edge of the forest.
+
+# Discussion
+## Discussion of Finding 1
+By comparing the ratio of temperature to humidity against to the hour when the data is measured. We find that the ratio has more variation during the sunset period. This is because when the radiation from the sun decrease, the ocean has higher specific heat capacity than the land. So the land will loss heat much more quickly than the ocean. The air pressure on the ocean part will be lower than the land part because of convection process. The air pressure difference will attract the air from the inner land flow to the forest region. With more uncertainty influence introduced from the outer system, the more uncertainty of correlation between humidity and temperature, which will increase the variation of the ratio.
+
+##Discussion of Finding 2
+By looking into how the temperature and temperature spatial structure change along with time in hour scale, we find that during the night time, there is not temperature difference between the top and the bottom. But during the day time, the temperature is relatively higher than that on the bottom.
+
+##Discussion of Finding 3
+By ploting the humidity in direction, we find that the west side of the both trees has higher mean humidity than that in east side. Which is majorly caused by the ocean fog comes from the west side. Meanwhile, the process discussed in #1 section also partially explain this difference, as most of the air bring from the inland are relatively dry.
+The interior tree has significantly higher humidity than the tree located in the edge. Even the paper didn't tell us the exact location of the edge tree, whether it is on the west edge or east edge. We could make a confident guess that the edge tree is located at the east side of the forest by analysing this figure.
+
+# Conclusion
+
+The data measure the temperatue, relative humidity, incident PAR and reflected PAR every 5 minutes for 44 days with 72 motes located at different height in two trees. The data have relatively high spatial and temporal resolution. It offered a great oppotunities for the ecologist and data scientist to analysis the spatial and temporal structure in redwood forest.
+We find that 1) the ratio of temperature to humidity increase during the sunset time period. It is majorly caused by the air pressure difference between ocean and land during the sunset period.
+2)The ratio of incident PAR to reflect PAR seems unreasonable and unreal. It may exists some errors in the devices.
+3)The temperature spatial structure change along with time in hour scale. It is relatively flat during the night time.
+4)The PAR is relatively higher in south side than that in north side, which is consistant to the physical background.
+5)The humidity on the west side is relatively higher than that in east side, which is majorly caused by ocean fog effect. The pressure difference will attract air flow from ocean to land during the daytime which bring air with high humidity, and the pressure difference during the sunset period will attract air flow from inland to ocean, which bring air with low humidity.
+
+
+# Bibliography
+
+Sivak M N, Heber U, Walker D A. Chlorophyll a fluorescence and light-scattering kinetics displayed by leaves during induction of photosynthesis[J]. Planta, 1985, 163(3): 419-423.
+Rao I M, Abadia J, Terry N. Leaf phosphate status and photosynthesis in vivo: changes in light scattering and chlorophyll fluorescence during photosynthetic induction in sugar beet leaves[J]. Plant science, 1986, 44(2): 133-137.
+Meskhidze N, Chameides W L, Nenes A. Dust and pollution: a recipe for enhanced ocean fertilization?[J]. Journal of Geophysical Research: Atmospheres, 2005, 110(D3).
