@@ -1,0 +1,540 @@
+\documentclass[english]{article}
+
+\usepackage{float}
+\usepackage{hyperref}
+
+\usepackage{geometry}
+\geometry{verbose,tmargin=1in,bmargin=1in,lmargin=1in,rmargin=1in}
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\setlength{\parskip}{\smallskipamount}
+\setlength{\parindent}{0pt}
+\usepackage{amsthm}
+\usepackage{amsmath}
+\begin{document}
+
+
+\title{Lab 2 - Linguistic Survey, Stat 215A, Fall 2017}
+
+
+\author{SID:3032096549}
+
+\maketitle
+
+
+<<setup, echo = FALSE, message=FALSE, warning=FALSE>>=
+# load in useful packages
+library(tidyverse)
+library(forcats)
+library(lubridate)
+library(stringr)
+library(gridExtra)
+library(ggthemes)
+library(grid)
+library(ggmap)
+library(maps)
+library(ica)
+library(RandPro)
+library(clue)
+library(nsprcomp)
+library(clusteval)
+library(cluster)
+library(fossil)
+# load in the loadData() functions
+source("R/load.R")
+# load in the cleanData() functions
+source("R/clean.R")
+source("R/bestMap.R")
+source("R/funcs.R")
+@
+\section{Introduction}
+In this report, in second section, the kernel density and Loess smoother applied on Redwood data is discussed. Then the linguistic geography of the United States by analyzing the Harvard Dialect Survey conducted in 2003 is studied. In Section 3, data cleaning and preliminary data exploration is performed. In this part, question 74, Question 76 and Question 86 are chosen for investigation. In Section 4, several classical data reduction methods are applied to explore the dimensional characteristics of the dataset as well as to eliminate noise. In Section 5, several clustering methods are combined with data reduction methods on the linguistic data. The number of clustering is determined by gap statistics visualization. The geographical pattern shown in the results are discussed. Four dialect regions are found after clustering, i.e., eastern part, middle part, southern part and western plus northern part of the U.S. Then several critical questions which dominates clustering results are detected and discussed. In Section 6, the raw data are added Gaussian noises to test the robustness of the clustering methods.
+
+\section{Kernel density plots and smoothing for Redwood data}
+For this part of re-analyzing the Redwood data, the version after cleaning procedures is used, where missing values, mismatching samples, outliers and samples from problematic sensors are removed. Then in estimating the distribution of temperature over the whole dataset, six different kernels are used, i.e., Biweight kernel, Cosine kernel, Epanechnikov kernel, Gaussian kernel, Optcosine and Rectangular kernel. For each kernel, the bandwidth are adjusted by scale 0.2, 2, 4, 8 with respect to the standard estimated scale defined as $0.9\times min\{\hat{\sigma},\hat(q)/1.34\}$. Here $\sigma$ is the estimated standard deviation and q is the interquartile. Notice that larger bandwidth may lead to more smoothness but higher bias, and vice versa. This is also known as the bias-variance tradeoff. From the kernel density plots in Figure 1, it's hard to tell which kernel outperforms the others. But it's obvious that as mentioned above, larger bandwidth leads to more smoothness in the density line. \\
+Then a fixed time point for each day during the project is chosen to analyze the correlation between temperature and humidity for all nodes. Since time points are uniquely represented by epoch in the data and there are 288 epochs each day, the samples with epoch$mod$288=66 is chosen as the subset. Loess smoothers with different bandwidth and degrees of the polynomials are experimented to fit the subset of data, and the results are shown in Figure 2. Again, with larger span, when fitting each point, more neighbouring samples are included, resulting in more smoothness but higher bias, and vice versa. This is similar to the bia-varaince tradeoff issue mentioned above. As for the degree of polynomials, notice that higher degrees would bring in more paramters into the model, increasing the complexity of the parametric model and might suffer from fitting the noise other than signal. To be concrete, as shown in the plots, higher degree of polynomials are more curved in order to better fit this training dataset, and might suffer from over-fitting issues.
+<<load-data, echo = FALSE, message = FALSE, warning = FALSE, cache = TRUE>>=
+# note that the cache = TRUE chunk argument means that the results of this 
+# chunk are saved so it doesn't need to be re-run every time you compile the pdf
+
+# load the dates data
+dates_orig <- loadDatesData(path = "data/")
+# clean the dates data
+dates <- cleanDatesData(dates_orig)
+location <- read.table("data/mote-location-data.txt", header = TRUE)
+# load the redwood sensor data
+redwood_all_orig <- loadRedwoodData(path = "data/", source = "all")
+redwood_net_orig <- loadRedwoodData(path = "data/", source = "net")
+redwood_log_orig <- loadRedwoodData(path = "data/", source = "log")
+# clean the redwood sensor data
+dates["epoch"] = c(1:dim(dates)[1]);
+dates = dates %>% select(-number)
+location["nodeid"] = as.integer(location$ID);
+log_orig = cleanRedwoodData(redwood_log_orig, dates, location)
+net_orig = cleanRedwoodData(redwood_net_orig, dates, location)
+@
+
+
+<<echo = FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.height=6, fig.width=9, fig.cap = "Kernel density for for temperature, using different kernels and different adjusted bandwidths", cache = TRUE, fig.pos = "H">>=
+source("R/clean.R")
+
+# check and clean the duplicated data in both log and net dataset
+log_orig1 = check_duplicate(log_orig);
+net_orig1 = check_duplicate(net_orig);
+
+# check and clean the outlier by checking the voltage rang and remove certain individual sensors that have abnormal voltage behavior
+log_orig2 = log_orig1 %>% filter(voltage >= 2.4 & voltage <= 3.0) %>% filter(!(nodeid %in% c(123, 128, 134, 141, 142, 143, 145)))
+net_orig2 = net_orig1 %>% filter(voltage >= 200 & voltage <= 260) %>% filter(!(nodeid %in% c(3, 78 ,134, 141, 145)))
+
+# combine the net and log dataset and check and discard duplicated observations
+data_all = bind_rows(net_orig2, log_orig2);
+data_all_nodup = check_duplicate(data_all);
+
+# check discard samples that have observations outof normal range, establish the final version of cleaned data.
+data_final = data_all_nodup %>% filter(humidity >= 10 & humidity <= 110) %>% filter(humid_temp < 35) %>% filter(hamatop < 150000) %>% filter(hamabot < 8500)
+
+# plot the kernel density estimation under different kernel functions and bandwidths
+p11 = data_final %>% select(temperature = humid_temp) %>% filter(!is.na(temperature)) %>% ggplot(aes(temperature)) + geom_density(adjust = 0.2, kernel = "gaussian", aes(colour = "0.2"), size = 0.2) + geom_density(adjust = 2, kernel = "gaussian", aes(colour = "2"), size = 0.2) + geom_density(adjust = 4, kernel = "gaussian", aes(colour = "4"), size = 0.2) + geom_density(adjust = 8, kernel = "gaussian", aes(colour = "8"), size = 0.2) + scale_colour_manual(name = "band_adj", values = c("0.2"="black", "2"="red", "4"="blue", "8"="green")) + theme_bw() + theme(legend.position="top") + ggtitle("Gaussian")
+
+p12 = data_final %>% select(temperature = humid_temp) %>% filter(!is.na(temperature)) %>% ggplot(aes(temperature)) + geom_density(adjust = 0.2, kernel = "biweight", aes(colour = "0.2"), size = 0.2) + geom_density(adjust = 2, kernel = "biweight", aes(colour = "2"), size = 0.2) + geom_density(adjust = 4, kernel = "biweight", aes(colour = "4"), size = 0.2) + geom_density(adjust = 8, kernel = "biweight", aes(colour = "8"), size = 0.2) + scale_colour_manual(name = "band_adj", values = c("0.2"="black", "2"="red", "4"="blue", "8"="green")) + theme_bw() + theme(legend.position="top") + ggtitle("biweight")
+
+p13 = data_final %>% select(temperature = humid_temp) %>% filter(!is.na(temperature)) %>% ggplot(aes(temperature)) + geom_density(adjust = 0.2, kernel = "cosine", aes(colour = "0.2"), size = 0.2) + geom_density(adjust = 2, kernel = "cosine", aes(colour = "2"), size = 0.2) + geom_density(adjust = 4, kernel = "cosine", aes(colour = "4"), size = 0.2) + geom_density(adjust = 8, kernel = "cosine", aes(colour = "8"), size = 0.2) + scale_colour_manual(name = "band_adj", values = c("0.2"="black", "2"="red", "4"="blue", "8"="green")) + theme_bw() + theme(legend.position="top") + ggtitle("cosine")
+
+p14 = data_final %>% select(temperature = humid_temp) %>% filter(!is.na(temperature)) %>% ggplot(aes(temperature)) + geom_density(adjust = 0.2, kernel = "epanechnikov", aes(colour = "0.2"), size = 0.2) + geom_density(adjust = 2, kernel = "epanechnikov", aes(colour = "2"), size = 0.2) + geom_density(adjust = 4, kernel = "epanechnikov", aes(colour = "4"), size = 0.2) + geom_density(adjust = 8, kernel = "epanechnikov", aes(colour = "8"), size = 0.2) + scale_colour_manual(name = "band_adj", values = c("0.2"="black", "2"="red", "4"="blue", "8"="green")) + theme_bw() + theme(legend.position="top") + ggtitle("epanechnikov")
+
+p15 = data_final %>% select(temperature = humid_temp) %>% filter(!is.na(temperature)) %>% ggplot(aes(temperature)) + geom_density(adjust = 0.2, kernel = "optcosine", aes(colour = "0.2"), size = 0.2) + geom_density(adjust = 2, kernel = "optcosine", aes(colour = "2"), size = 0.2) + geom_density(adjust = 4, kernel = "optcosine", aes(colour = "4"), size = 0.2) + geom_density(adjust = 8, kernel = "optcosine", aes(colour = "8"), size = 0.2) + scale_colour_manual(name = "band_adj", values = c("0.2"="black", "2"="red", "4"="blue", "8"="green")) + theme_bw() + theme(legend.position="top") + ggtitle("optcosine")
+
+p16 = data_final %>% select(temperature = humid_temp) %>% filter(!is.na(temperature)) %>% ggplot(aes(temperature)) + geom_density(adjust = 0.2, kernel = "rectangular", aes(colour = "0.2"), size = 0.2) + geom_density(adjust = 2, kernel = "rectangular", aes(colour = "2"), size = 0.2) + geom_density(adjust = 4, kernel = "rectangular", aes(colour = "4"), size = 0.2) + geom_density(adjust = 8, kernel = "rectangular", aes(colour = "8"), size = 0.2) + scale_colour_manual(name = "band_adj", values = c("0.2"="black", "2"="red", "4"="blue", "8"="green")) + theme_bw() + theme(legend.position="top") + ggtitle("rectangular")
+
+grid.arrange(p11,p12,p13,p14,p15,p16, layout_matrix = rbind(c(1,2,3), c(4,5,6)))
+
+@
+
+<<echo = FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.height=4, fig.width=9, fig.cap = "LOESS smoothing on the relationship between temperature and humidity fora certain time point of a day throughout the whole project period", cache = TRUE, fig.pos = "H">>=
+
+# plot the Loess smoother for humidity vs temperature under different span and degrees of polynomicals
+p21 = data_final %>% select(temperature = humid_temp, humidity = humidity, epoch = epoch) %>% filter(epoch %% 288 == 66) %>% ggplot(aes(x = temperature, y = humidity)) + geom_point(size = 0.00005) + stat_smooth(se = FALSE, method = "loess", formula = y~poly(x,3), span=1, aes(colour = "1")) + stat_smooth(se = FALSE, method = "loess", formula = y~poly(x,3), span=3, aes(colour = "3")) + stat_smooth(se = FALSE, method = "loess", formula = y~poly(x,3), span=5, aes(colour = "5")) + scale_colour_manual(name = "span", values = c("1"="green", "3"="red", "5"="blue")) + ggtitle("Degree=3") +  theme_bw() + theme(legend.position="top") 
+
+p22 = data_final %>% select(temperature = humid_temp, humidity = humidity, epoch = epoch) %>% filter(epoch %% 288 == 66) %>% ggplot(aes(x = temperature, y = humidity)) + geom_point(size = 0.00005) + stat_smooth(se = FALSE, method = "loess", formula = y~poly(x,2), span=1, aes(colour = "1")) + stat_smooth(se = FALSE, method = "loess", formula = y~poly(x,2), span=3, aes(colour = "3")) + stat_smooth(se = FALSE, method = "loess", formula = y~poly(x,2), span=5, aes(colour = "5")) + scale_colour_manual(name = "span", values = c("1"="green", "3"="red", "5"="blue")) + ggtitle("Degree=2") + theme_bw() + theme(legend.position="top") 
+
+p23 = data_final %>% select(temperature = humid_temp, humidity = humidity, epoch = epoch) %>% filter(epoch %% 288 == 66) %>% ggplot(aes(x = temperature, y = humidity)) + geom_point(size = 0.00005) + stat_smooth(se = FALSE, method = "loess", formula = y~poly(x,1), span=1, aes(colour = "1")) + stat_smooth(se = FALSE, method = "loess", formula = y~poly(x,1), span=3, aes(colour = "3")) + stat_smooth(se = FALSE, method = "loess", formula = y~poly(x,1), span=5, aes(colour = "5")) + scale_colour_manual(name = "span", values = c("1"="green", "3"="red", "5"="blue")) + ggtitle("Degree=1") + theme_bw() + theme(legend.position="top") 
+
+grid.arrange(p21,p22,p23, layout_matrix = rbind(c(1,2,3)))
+@
+
+\section{Data from the linguistic suevey}
+In total three datasets are provide: lingData, lingLocation and questionData. 47471 people from all parts of the U.S were surveyed on 122 questions. A subset of 67 questions are available in the given datasets. In dataset lingData, for each sample, the ID, CITY, STATE, ZIP, lat (latitude), long (longitude) and their responses to questions are provided. ID is the individual index while CITY, STATE, ZIP, lat, long describe the location. Dataset lingLocation aggregates Dataset lingData by put people with the same lat, long and responses together. The questionData gives content of each question, but dose not provide information for the answer choices. For the choices for each question, one has to refer to the orginal Harvard Dialect Survey. \\
+
+
+Since one of the targets for this project is to represent the results using map plots, extra geographical information are needed. Since each location could be identified by ZIP code, I referred to the FIPS county code to match and add county information for each sample. The reason is that in showing the results of clustering analysis, representing individuals' clusters on a map is comlicated, so the idea is to group the samples according to geographical closeness. So the choices could be city, county or state. Notice that city is too small a unit, and state could be too large, so the county is used as the basic unit to represent geographical patterns of dialects in following analysis. \\
+
+\subsection{Data cleaning and processing}
+<<echo = FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.height=3, fig.width=9, fig.cap = "Histogram of effective number of answers under different cutoffs", cache = TRUE, fig.pos = "H">>=
+question_data = load("data/question_data.RData")
+lingData = read.table("data/lingData.txt", header = TRUE) %>% select(-CITY, -STATE, -lat, -long)
+lingLoc = read.table("data/lingLocation.txt")
+zip = read.csv("extra/us_postal_codes.csv") %>% mutate(ZIP = Zip.Code) %>% mutate(county = State.Abbreviation) %>% select(-Zip.Code, -State.Abbreviation)
+
+ling_zip = merge(lingData, zip, by = "ZIP", incomparables = NA) %>% filter(!is.na(county)) %>% filter(! (State%in% c("Alaska", "Hawaii")));
+effective = 67 - apply(ling_zip[,3:69]==0, 1, sum);
+
+opar = par(mfrow = c(1,4))
+hist(effective, xlab = "number of effective answer", main = "No cutoff", breaks = 30)
+hist(effective[effective<=64], xlab = "number of effective answer", main = "cutoff = 64", breaks = 30)
+hist(effective[effective<=62], xlab = "number of effective answer", main = "cutoff = 62", breaks = 30)
+
+hist(effective[effective<=60], xlab = "number of effective answer", main = "cutoff = 60", breaks = 30)
+par(opar)
+
+
+ling_zip = ling_zip[effective>=60, ]
+ling_zip[,3:69][ling_zip[,3:69] == 0] <- NA
+ling_zip_orig = ling_zip
+
+sample_size_count = data.frame(count(ling_zip, county));
+sample_size_count[,1] = tolower(as.character(sample_size_count[,1]))
+county_map <- map_data("county")  %>% mutate(county = subregion)
+state_map <- map_data("state")
+sample_county = merge((sample_size_count), county_map, by = "county")
+sample_county <- arrange(sample_county, group, order)
+
+n1 = sample_county$n;
+n1[sample_county$n == 0] <- "0"
+n1[sample_county$n>0 & sample_county$n<15] <- "1-15"
+n1[sample_county$n>=15 & sample_county$n<30] <- "15-30"
+n1[sample_county$n>=30 & sample_county$n<45] <- "30-45"
+n1[sample_county$n>=45 & sample_county$n<60] <- "45-60"
+n1[sample_county$n>=60] <- "60-"
+sample_county$n1 = as.factor(n1)
+
+@
+The data cleaning process involves the following procedures.
+\begin{enumerate}
+\item
+Matching each individual to the county using the zip code. The individuals with zip code not matching to any county are discarded, since eventually the clusters are visualized with counties as basic unit, so each sample must have a county.
+\item
+Samples with zip code matching to counties outside mainland U.S are excluded, i.e Alaska, Hawaii, since the focus would be the dialect pattern in mainland U.S. After this cleaning procedure, approximately 46500 samples are left in the data, matched to 1482 different counties.
+\item
+Some samples have tremendous missing values, i.e their answers to many of the 67 questions are missing. Since many clustering algorithms and dimension reduction techniques do not accept missing values, individuals who have valid answers for less than 60 of the 67 questions are excluded. The justification for the cutoff is as follow. If we take a look at the distribution of number of effective answers under different cutoffs (Figure 3), it's obvious that if an individual has less than 60 responses, he/she is likely to have zero effective reponse.
+\item
+To plot the U.S county map in ggplot, a standard county map data file is needed. So the linguistic data is merged with the county map data, and unmatched samples are discarded. After this step, 44707 samples are left in the data.
+\item
+Since the question response belongs to categorical data and cannot be compared directly between questions, they must be transformed into binary coding. For example, if one question has 4 responses one person chose the second option, his response is expressed as (0,1,0,0). Finally, each person has a response vector of length of 468 (the sum of the number of options for all questions), with each element being the binary indicator if the corresponding option is chosen. Here we get a response matrix with a size of 44707 by 468. By simply taking an average of the response vectors among people in the same county, the data matrix for county is 1482 by 468.
+\end{enumerate}
+Also, instead of doing individual-wise clustering, county-wise clustering might also be informative. So the individual data matrix is also aggregated into county level. The distribution of effective samples for each county in mainland U.S is plotted in Figure 4. Notice that there are many counties with no or few samples in the middle part.
+
+<<echo = FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.height=4, fig.width=9, fig.cap = "The distribution of sample size on counties", cache = TRUE, fig.pos = "H">>=
+p4 = ggplot( sample_county, aes( x = long , y = lat , group=group ) ) +
+  geom_polygon( colour = "grey" , aes( fill = n1 ) ) +
+  expand_limits( x = sample_county$long, y = sample_county$lat ) +
+  coord_map( "polyconic" ) + 
+  labs(fill="Number Per\nCounty") + 
+  geom_path( data = state_map , colour = "red")+ scale_fill_brewer() + theme_map() 
+print(p4)
+@
+
+\section{Exploratory Data Analysis}
+In this part, three survey questions are picked:
+\begin{itemize}
+\item
+Q074: What do you call the little gray creature (that looks like an insect but is actually a crustacean) that rolls up into a ball when you touch it?
+\item
+Q076: What term do you use to refer to something that is across both streets from you at an intersection (or diagonally across from you in general)?
+\item
+Q089: Can you call coleslaw "slaw"?
+\end{itemize}
+They reason for the choice of these three questions is that they focus on the way people call several common things. Question 74 has 14 choices, Question 76 has 9 and Question 89 has 5, which reflects the diversity of dialects. The geographical implications are obvious: Question 76 and Qeustion 89 share a similar pattern that they separate individual from the others, while Question 74 isolates the northern part and eastern part (Figure 5). It’s easy to interpret the isolated eastern and northern part with responses like ’no idea’ as the cold environment offer them few opportunities of seeing such bugs. But other questions may involve complicated cultural and historical factors. See the interactive map \href{https://xuda.shinyapps.io/rsconnect/}{\textcolor{red}{BY CLIKCING HERE}}.\\
+Then all three questions are examined to see if there is obvious association. The correlation of the pairwise questions is calculated by performing a kernel density estimation on the two dimension distribution, as shown in Figure 5. Most individuals incline to response ’roly poly’ to Question 74 and ’kitty-conner’ toQuestion 76 simultaneously or take ’roly poly’ and ’catty corner’ as a pari. Such connection can help predict the response for each other due to some strong correlations in specific answers to different questions.
+<<echo = FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.height=3, fig.width=9, fig.cap = "Pairwise 2D Kernel densitiy estimation for the correlation among the three question", cache = TRUE, fig.pos = "H">>=
+source("R/funcs.R")
+# transform into binary format
+ans = data.frame(lapply(ling_zip[,3:69], as.factor));
+options(na.action='na.pass')
+ans_binary = model.matrix(~. + 0, data = ans, contrasts.arg = lapply(ans, contrasts, contrasts=FALSE), na.action="na.omit")
+# select the question-answer columns
+ling_zip = ling_zip %>% select(-starts_with("Q"));
+ling_zip = cbind(ling_zip, ans_binary)
+
+ling_county = ling_zip%>% select(county, starts_with("Q")) %>% group_by(county)
+options(na.action='na.rm')
+
+ling_county1 = aggregate(ling_county[,2:469], by = list(ling_county$county), FUN = Sum);
+colnames(ling_county1)[1] <- "county";
+ling_county_final = merge(ling_county1, ling_zip[,1:8], by = "county")
+
+ling_sample = ling_zip_orig %>% select(starts_with("Q074"), starts_with("Q076"), starts_with("Q089"))
+
+# plot the correlation contours
+p51 = ling_sample %>% ggplot(aes(Q074, Q076)) + stat_density_2d(aes(fill = ..level..), geom = "polygon") + scale_x_continuous(breaks = c(1:13)) + scale_y_continuous(breaks = c(1:8))
+p52 = ling_sample %>% ggplot(aes(Q074, Q089)) + stat_density_2d(aes(fill = ..level..), geom = "polygon") + scale_x_continuous(breaks = c(1:13)) + scale_y_continuous(breaks = c(1:4))
+p53 = ling_sample %>% ggplot(aes(Q076, Q089)) + stat_density_2d(aes(fill = ..level..), geom = "polygon") + scale_x_continuous(breaks = c(1:8)) + scale_y_continuous(breaks = c(1:4))
+
+grid.arrange(p51,p52,p53, layout_matrix = rbind(c(1,2,3)))
+
+@
+\section{Dimension Reduction}
+After the data cleaning process, we have a data matrix of dimension $44707 \times 468$. Since the categorical variables are all transformed into binary coding, the data is of extremely high dimension. Since the ultimated goal is discover the dialect pattern via clustering techniques, and while most clustering algorithms are distance-based (which means the similarity of two samples are based on some distance measure), extra noisy dimensions could easily bring in noise with magnitude comparable to signal. Notice that it is unlikely that all 468 features here reveal the dialect patterns.  So before doing clustering, dimension reduction is of demand. The overall goal is to reduce the ambient dimension from 468 to a manageable number and thus reduce noise during this process. \\
+Various classical dimension reduction techniques are experimented, including principal component analysis (PCA), independent compoennt analysis (ICA), and random projection. Notice that all of these methods falls into unsupervised learning category, that is, no prior labelled data would be used in learning the underlying lower dimension structures, so it's hard to evaluate their performance. However, since the ultimate goal for doing dimension reduction is to reveal dialect geographical pattern via clustering, the quality of clustering results could be used as an indicator for the performance of dimension reduction methods. \\
+One way to do this is via subjective inspection at the resulting plots of clusters. For instance let $c^1$ and $c^2$ denote two possible clusterings of n data points. That is, $c_{1i}$ is an integer denoting the cluster to which ith individual has been allocated in the first clustering, and inspect the closeness of samples belonging to the same cluster. But this method could be time consuming and tedious, since there are about 40,000 samples. Another way is to use the notion of Rand index to compute the similarity of two clusterings. The Rand index is defined as
+\begin{equation}
+R(c^1, c^2) = \frac{a+b}{C_n^2}=\frac{|(i,j)|c_i^1 = c_j^1,c_i^2=c_j^2| + |c_i^1 \neq c_j^1,c_i^2\neq c_j^2|}{C_n^2}
+\end{equation}
+where where a is the number of pairs of individuals who are clustered together in both $c^1$ and $c^2$ and b is the number of pairs of individuals who are clustered separately in both $c^1$ and $c^2$. Note that the denominator is simply the total number of pairs of individuals. \\
+Each of the above mentioned dimension-reduction techniques will be evaluated using Rand index, after doing the basic K-means clustering. Also, the number of clusters existed in the original whole dataset is determined using Rand Index, which will be mentioned in the next section. For now, let's just assume as given that the number of clusters in the dataset is 4. This number is arrived at by gap statistic analysis and visual inspection of the result of k-means on full data. \\
+{\bf Plotting clusters on map}One challenge in plotting the clustering result onto the map is that the resulting clusters would be consisted of individuals. Visualizing every individual separately in a US map is problematic and clunky at best. Instead, the individual-level clusters are aggregated into county-level clusters. The counties would be used to show the clustering results, by following the majority voting rule i.e a county belongs to the cluster which contains the most number of samples from that county. So county level maps will be generated after embeded into the contour of U.S. For illustration, the clustering result of using the whole dataset is plottedg in Figure 7a.
+\subsection{Principal Component Analysis}
+The first technique to investigate is PCA. To decide on the number of PC’s, fistly for all principal components, their variance and cumulative variance are ploted in Figure 6. 
+
+<<echo = FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.height=3, fig.width=9, fig.cap = "Variance (left) and Cumulative Variance of Principal Components (right)", cache = TRUE, fig.pos = "H">>=
+# build the whole data matrix
+ind = apply(ling_zip[,9:476], 1, check_na)
+ling_zip_na = ling_zip[!ind,]
+data_mat = as.matrix(ling_zip_na %>% select(starts_with("Q")))
+km_fulldata = kmeans(data_mat, centers = 4)
+# extract the PCAs and do clustering 
+
+pca_full = prcomp(data_mat, center = TRUE, scale. = TRUE, retx = TRUE)
+cum_pca = rep(0, length(pca_full$sdev))
+for(i in 1:length(pca_full$sdev))
+  cum_pca[i] = sum(pca_full$sdev[1:i])
+opar = par(mfrow = c(1,2))
+plot(pca_full$sdev/sum(pca_full$sdev), xlab = "", ylab = "relative variance explained", cex = 0.4)
+plot(cum_pca/sum(pca_full$sdev),  xlab = "", ylab = "relative cumulative variance", cex = 0.4)
+par(opar)
+
+@
+Notice that the principal components do not have a sharp dropoff in variance, so there is no lower dimensional affine subspace which captures most variance of the whole data set. As a result, dimension reduction by PCA is not so helpful in this case, since a large number of principal components is needed to capture the variation of the data.\\
+By extracting top k principal components $k \in \{10,50,100,200\}$, the Rand index between the clustering result using K-means on whole dataset and the result for each of the 4 cases above are computed. Notice that from Table 1 we see that it is favorable to use the top 10 PCs, since although they explain less than $20\%$ of total variance, the similarity between this clustering result matches the clustering reuslt using whole dataset well (Rand index=0.96). This also suggests that the whole dataset possibly retains a fair amount of noise, and using principal components can reduce the noise, which can be also justified by result in Table 2, where we see that smaller number of top PCs actually lead to a better Rand index even though they capture only a small proportion of the total variance For illustration, the clustering result of using top 10 principle components is plotted in Figure 7b.
+
+
+\begin{table}[htb]
+\begin{center}
+\caption{Rand index for clustering reuslt using k top principal components}
+\begin{tabular}{|c|c|c|c|c|}
+\hline
+k & 10 & 50 & 100 & 200 \\ \hline
+Rand index & 0.96 & 0.99 & 0.83 & 0.81 \\ \hline
+\end{tabular}
+\end{center}
+\end{table}
+
+\begin{table}[htb]
+\begin{center}
+\caption{Rand index for clustering reuslt using top principal components that explains $k\%$ of totla variance}
+\begin{tabular}{|c|c|c|c|}
+\hline
+k & 50 & 80 & 100 \\ \hline
+num. of PCs & 44 & 109 & 157 \\ \hline
+Rand index & 0.94 & 0.97 & 0.94 \\ \hline
+\end{tabular}
+\end{center}
+\end{table}
+<<echo = FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.height=7, fig.width=10, fig.cap = "Comparison of 4-means clustering results on full data and various dimension reduction ap- proaches.", cache = TRUE, fig.pos = "H">>=
+source("R/funcs.R")
+# doing k-means
+ind = apply(ling_zip[,9:476], 1, check_na)
+ling_zip_na = ling_zip[!ind,]
+data_mat = as.matrix(ling_zip_na %>% select(starts_with("Q")))
+km_fulldata = kmeans(data_mat, centers = 4)
+# clustering using PCAs
+
+p61 = plot_cluster(ling_zip_na, county_map, state_map, km_fulldata$cluster)
+p61 = p61 + ggtitle("(A) Full data")
+pca_10 = pca_full$x[,1:10]
+#pca_50 = pca_full$x[,1:50]
+#pca_100 = pca_full$x[,1:100]
+#pca_200 = pca_full$x[,1:200]
+km_pc10 = kmeans(pca_10, centers = 4)
+#km_pc50 = kmeans(pca_50, centers = 4)
+#km_pc100 = kmeans(pca_100, centers = 4)
+#km_pc200 = kmeans(pca_200, centers = 4)
+p62 = plot_cluster(ling_zip_na, county_map, state_map, bestMap(km_fulldata$cluster, km_pc10$cluster))
+p62 = p62 + ggtitle("(B) Top 10 principal components")
+
+#proj_mat_40 = form_sparse_matrix(40,468,FALSE) 
+#proj_data_40 = data_mat %*% t(proj_mat_40)
+proj_mat_80 = form_sparse_matrix(80,468,FALSE) 
+proj_data_80 = data_mat %*% t(proj_mat_80)
+#proj_mat_120 = form_sparse_matrix(120,468,FALSE) 
+#proj_data_120 = data_mat %*% t(proj_mat_120)
+#km_rpj_40 = kmeans(proj_data_40, centers = 4)
+km_rpj_80 = kmeans(proj_data_80, centers = 4)
+#km_rpj_120 = kmeans(proj_data_120, centers = 4)
+
+p63 = plot_cluster(ling_zip_na, county_map, state_map, bestMap(km_fulldata$cluster, km_rpj_80$cluster))
+p63 = p63 + ggtitle("(C) 80 random projections")
+
+#ica_full_10 = icafast(data_mat,nc = 10)
+#km_ica10 = kmeans(ica_full_10$S, centers = 4)
+ica_full_50 = icafast(data_mat,nc = 50)
+km_ica50 = kmeans(ica_full_50$S, centers = 4)
+#ica_full_100 = icafast(data_mat,nc = 100)
+#km_ica100 = kmeans(ica_full_100$S, centers = 4)
+
+
+p64 = plot_cluster(ling_zip_na, county_map, state_map, bestMap(km_fulldata$cluster, km_ica50$cluster))
+p64 = p64 + ggtitle("(D) 50 independent components")
+grid.arrange(p61,p62,p63,p64, layout_matrix = rbind(c(1,2),c(3,4)))
+
+@
+
+\subsection{Random Projection}
+Random projection is an efficient dimension reduction technique in unsupervised learning problems, under the theoretical guarantee of Johnson-Lindenstrauss lemma. In random projection, the rows (samples) of the data matrix is projected onto a lower-dimension subspace with basis constraucted as affine combinition of random variables. The general idea is that samples' pariwise "distance" are preserved after projecting into the lower-dimensional subspace. The lemma guarantees that with high probability ($1-\delta$), all norms and inner products after projection are preserved within an accuracy of $\epsilon$ from the original values, if the dimension of the projected subspace is at least $O(log(n/\delta)/\epsilon^2)$, where n is the original sample size. In this case where $l_2$ norm is used, suppose $F: R^d \to R^m$, where d is the original dimension, m is the after projection dimension,
+\begin{equation}
+P((1-\delta) \leq \frac{\|F(u_i - F(u_j))\|_2^2}{\|u_i - u_j\|_2^2} \leq (1+\delta)) > 1-\epsilon, \ m=O(log(n/\delta)/\epsilon^2)
+\end{equation}
+Notice that clustering algorithms such as K-means depends only on pairwise distances, so this justifies the use of random projection as a valid dimension reduction technique for clustering. \\
+To investigate the performance of random projection, m = 40, 80, 120 are experimented. The Rand indices between these clustering results and that of the orginal data is given is Table 3. For illustration, the clustering result of using 80 as random projection dimension is plotted in Figure 7c.
+\begin{table}[htb]
+\begin{center}
+\caption{Rand index for clustering reuslt using k random projection}
+\begin{tabular}{|c|c|c|c|}
+\hline
+k & 40 & 80 & 120  \\ \hline
+Rand index & 0.70 & 0.75 & 0.78 \\ \hline
+\end{tabular}
+\end{center}
+\end{table}
+Notice that the Rand indices for random projections are in general less than that of PCA. This is an obvious consequence since random projection aims at preserving every feature with eqaul importance and PCA aims at capturing more important features. So it's likely that both signal and noise are retained after random projection. \\
+
+\subsection{Independent Component Analysis}
+The last method to experiemnt on is Independent Component Analysis, which aims at extracting few components which contain most of the signal which follows non-gaussian distributions, while the rest are mostly noisy and consequently more gaussian. ICA works by iteratively choosing directions with maximal non-gaussianity and then projects the data along these directions. Here, I experimented on using 30, 50, 100 top independent components. The Rand indices between these clustering results and that of the orginal data is given is Table 4. For illustration, the clustering result of using 50 independent components is plotted in Figure 7d.
+\begin{table}[htb]
+\begin{center}
+\caption{Rand index for clustering reuslt using k independent components}
+\begin{tabular}{|c|c|c|c|}
+\hline
+k & 30 & 50 & 100  \\ \hline
+Rand index & 0.55 & 0.57 & 0.66 \\ \hline
+\end{tabular}
+\end{center}
+\end{table}
+It's obvious that the Rand indices are low for clustering results after doing ICA. This might be justified by the fact that the signals are originally Gaussian and thus ICA couldn't tell them apart from noise, due to its working mechanism. 
+
+\section{Clustering combined with Data Reduction}
+\subsection{K-means clustering}
+<<echo = FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.height=3, fig.width=10, fig.cap = "Gap statistics plot for the number of clusters", cache = TRUE, fig.pos = "H">>=
+
+# form county-wise answers
+county_datamat = ling_county1 %>% select(starts_with("Q"))
+# compute the GAP statistics
+GAP = clusGap(county_datamat, FUNcluster = kmeans, K.max = 8, B = 20)
+GAP = GAP$Tab[,3]
+gap = NULL
+for(i in 1:(length(GAP) - 1))
+  gap = c(gap, -(GAP[i]-GAP[i+1]))
+opar = par(mfrow = c(1,2))
+plot(c(1:length(GAP)), GAP, xlab = "clusters", ylab = "Gap[k]", type = "b")
+plot(c(1:length(gap)), gap, xlab = "clusters", ylab = "Gap[k+1]-Gap[k]", type = "b")
+par(opar)
+@
+K-means clustering is a method of vector quantization, originally from signal processing, that is popular for cluster analysis in data mining. K-means clustering aims to partition n observations into k clusters in which each observation belongs to the cluster with the nearest mean, serving as a prototype of the cluster. Choice of the number of clusters is the first concern before application of any kind of clustering methods. In this case, this problem is solved from both the qualitative and quantitative perspectives. The Gap statistics is highly popular for selecting the number of centers for K-means.\\
+The Gap statistics for number of cluster centers from 1 to 8 are computed and shown in Figure 8. So it's obvious that when the number of clusters goes to 4, the Gap statistics difference first falls below 0.005. Also, there is little increase after the number of clusters reaches 4. \\
+Finally, visualization also plays an important role in determining the cluster number. In visual inspection, the aim is to find the number so that there are apparent geography groups while adding one cluster will lead to chaotic clustering caused by overfitting. It can be shown that 4 clusters make sense, as shown in Figure 7a. \\
+With selecting the cluster number as four, affter applying k-means clustering on original data aggregated over county, the result is shown in Figure 7a. In order to see the effectiveness of the data reduction methods, k-means clustering is applied on part of those methods, as shown in Figure 7b, 7c, 7d. From the clustering results in Figure 7a, we can see New England and Florida belong to the same cluster. Many of the Northern dialects can trace their roots to this dialect which was spread westward by the New England settlers as they migrated west. It carries a high prestige due to Boston’s early economic and cultural importance and the presence of Harvard University. In South Florida, there are those who consider that this region should be reclassified as part of the Northern dialect region. So many people from the North, particularly New York, have moved to south Florida that the majority of people tend to sound more Northern than Southern. The south part, is a continuous blue continuum, including South Midland, Virginia Piedmont, Southern Appalachina, and Gulf Southern.  In general south, as the northern dialects were originally dominated by Boston, the southern dialects were heavily influenced by Charleston, Richmond, and Savannah. Compared with the Eastern United States, the Western regions were settled too recently for very distinctive dialects to have time to develop or to be studied in detail.
+
+\subsection{K-medoids clustering}
+<<echo = FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.height=4, fig.width=10, fig.cap = "The clustering map for k-medoids when k = 6 on county level", cache = TRUE, fig.pos = "H">>=
+# doing k-medoid clusterings using county data
+source("R/funcs.R")
+
+county_datamat = ling_county1 %>% select(starts_with("Q"))
+#dist_mat = as.matrix(dist(county_datamat))
+k_mediod6 = pam(county_datamat, 6, diss = FALSE)
+p81 = plot_cluster_county(ling_county1, county_map, state_map,k_mediod6$cluster)
+p81 = p81 + ggtitle("(A) Full data")
+
+county_pca = prcomp(county_datamat, center = TRUE, scale. = TRUE, retx = TRUE)
+county_pca80 = county_pca$x[,1:80]
+#dist_mat_pca = dist(county_pca80)
+k_mediod_pc6 = pam(county_pca80, 6, diss = FALSE)
+p82 = plot_cluster_county(ling_county1, county_map, state_map,k_mediod_pc6$cluster)
+p82 = p82 + ggtitle("(B) Top 80 principal components")
+
+grid.arrange(p81, p82, layout_matrix = rbind(c(1,2)))
+
+@
+The k-medoids clustering method is similar to k-means, except that the former takes k data points as centers while the latter makes use of means from k disjoint sets. The k-medoids algorithm first picks up k data points randomly, and assign other points to their nearest centers, thus forming k clusters. Within each cluster, select the data point which minimizes the sum of the distances between it and other points. Repeat the previous steps until convergence. The K-medoids clustering using here is based on the data of county level because for individual level there will be too many samples for the algorithm to work. Instead of using Gap statistics to determine number of clusters, here I rely on visualization to determine the number of clusters because both the former methods tend to be conservative, and the performance looks good when the cluster number is larger. Eventually the cluster number is decided to be six. \\
+The performance of k-medoids on dialect clustering is tested on dataset with and without dimension reduction. Apart from checking the clustering from raw data, PCA, ICA and Random Projection are used to reduce the data dimension and eliminate noise within the data. For illustration purpose, the K-medoids county-level clustering result for raw data and top 80 pricipal components are plotted, shown in Figure 8. \\
+Comparing and , we see that the clustering results based on 6 clusters with top 80 PCs are quite satisfactory. The violet region in (b) aggregate Rockey Mountain, Pacific Northwest, Pacific Southwest in (c). The brown region in (b) corresponds to Upper Midwestern, Chicago Urban in (c). The blue region in (b) corresponds to New England, Inland Northern in (c). The red region in (b) corresponds to North Midland in (c). The yellow region in (b) corresponds to the main part of South Midland, Southern Appalachian, Coastal Southern in (c) while the green region in (b) corresponds to the main part of Southwestern, GulSouthern in (c). The result of k-medoids can be seen as a refinement of k-means. The k-medoids has separated Upper Midwestern and Southwestern out from Western regions and Southern regions respectively. Moreover, the Mexican dialect of Spanish had an significant influence on this area because there had already been as many as ten generations of Spanish speakers live there by the time Southwestern became part of the United States
+
+\subsection{Finding Critical Questions dominating clustering Results}
+<<echo = FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.height=5, fig.width=10, fig.cap = "Rand Index for question removed clusterings", cache = TRUE, fig.pos = "H">>=
+set.seed(2333)
+clus0 = kmeans(county_datamat, 4)
+Rand = 0
+
+# remove each question, doing k-means and compare with original clustering result
+rand = NULL
+for(i in colnames(ans)){
+  data_mat_de = county_datamat %>% select(-starts_with(i))
+  clus1 = kmeans(data_mat_de, 4)
+  rand = c(rand, rand.index(clus0$cluster, clus1$cluster))
+}
+Rand = Rand + rand
+
+Q_name = colnames(ans)
+rand_df = cbind(Rand, Q_name)
+rand_df = cbind(seq(1:67),rand_df[order(Rand),])
+colnames(rand_df) <- c("ind","rand_ind", "ques")
+
+plot(x = seq(1:67), y = as.numeric(rand_df[,2]), ylim = c(min(Rand), 1.0), cex = 0.5, pch = 16, xlab="Questions", ylab = "Rand index")
+text(x=seq(1:67), y = as.numeric(rand_df[,2]), labels=as.character(rand_df[,3]), cex= 0.6, pos = 4, srt = 90)
+
+@
+Here the target is to figure out which of those questions are most critical for clustering. To be consistent, k-means clustering is always performed on original data aggregated over county. So essentially the k-means results of the whole dataset is set as “standard clustering”.
+To see how important a question is, the idea is to remove the corresponding column for that question from the original dataset, and then apply k-means clustering on the new dataset. After that, using the method mentioned previously, the similarity measure between this clustering results and the “standard clustering” can be computed. This process is performed on each of the 67 questions for 10 times and the average similarity measure (Rand index) is plotted for each extracted question, shown in Figure 9.\\
+It's obvious that the Rand index experience the most change for taking away question 56, 76 and 58, which means these questions are important for determining clustering results.
+
+
+\section{Stability of findings}
+To figure out the stability of above findings, K-means method is selected to test the robustness of the clustering results, based on county-level raw data. Several ways can be applied to perturb the data, i.e., adding noises, removing some columns (excluding some questions) or removing some surveyed people. But due to above mentioned conclusion that different questions possess distinct weights on determining separate groups or determining the continuum, it’s not appropriate to sample questions uniformly for testing. Besides, question design is the very thing researchers can control, so there is no need to check the influence of the missing questions. Also, excluding some individuals who took part in the survey is equivalent to adding noises to the data. So here I only consider adding some gaussian noises on the data columns and the data rows respectively, and check how robust K-means is, after different levels of gaussian noises are added to the data. The levels of noise are 0.05,0.1,0.2,0.3, 0.4, each level with 10 replicates. Here, the noise of level 0.1 means it comes from the gaussian distribution with mean of zero and standard deviation of the sample mean multiplied by 0.1.
+<<echo = FALSE, warning=FALSE, message=FALSE, fig.align="center", fig.height=4, fig.width=10, fig.cap = "Rand Index between the clustering of noised data and the raw data", cache = TRUE, fig.pos = "H">>=
+source("R/funcs.R")
+
+# adding noise to column/rows, doing k-means and compare with original result
+set.seed(233333)
+rand_row_0.05 = NULL
+rand_col_0.05 = NULL
+noise1 = 0.05
+for(iter in 1:10){
+  data_row = add_row_noise(county_datamat, noise1)
+  data_col = add_col_noise(county_datamat, noise1)
+  clus_noise_row = kmeans(data_row, 4)
+  clus_noise_col = kmeans(data_col, 4)
+  rand_row_0.05 = c(rand_row_0.05, rand.index(clus0$cluster, clus_noise_row$cluster))
+  rand_col_0.05 = c(rand_col_0.05, rand.index(clus0$cluster, clus_noise_col$cluster))
+}
+
+rand_row_0.1 = NULL
+rand_col_0.1 = NULL
+noise1 = 0.1
+for(iter in 1:10){
+  data_row = add_row_noise(county_datamat, noise1)
+  data_col = add_col_noise(county_datamat, noise1)
+  clus_noise_row = kmeans(data_row, 4)
+  clus_noise_col = kmeans(data_col, 4)
+  rand_row_0.1 = c(rand_row_0.1, rand.index(clus0$cluster, clus_noise_row$cluster))
+  rand_col_0.1 = c(rand_col_0.1, rand.index(clus0$cluster, clus_noise_col$cluster))
+}
+
+rand_row_0.2 = NULL
+rand_col_0.2 = NULL
+noise1 = 0.2
+for(iter in 1:10){
+  data_row = add_row_noise(county_datamat, noise1)
+  data_col = add_col_noise(county_datamat, noise1)
+  clus_noise_row = kmeans(data_row, 4)
+  clus_noise_col = kmeans(data_col, 4)
+  rand_row_0.2 = c(rand_row_0.2, rand.index(clus0$cluster, clus_noise_row$cluster))
+  rand_col_0.2 = c(rand_col_0.2, rand.index(clus0$cluster, clus_noise_col$cluster))
+}
+
+rand_row_0.3 = NULL
+rand_col_0.3 = NULL
+noise1 = 0.3
+for(iter in 1:10){
+  data_row = add_row_noise(county_datamat, noise1)
+  data_col = add_col_noise(county_datamat, noise1)
+  clus_noise_row = kmeans(data_row, 4)
+  clus_noise_col = kmeans(data_col, 4)
+  rand_row_0.3 = c(rand_row_0.3, rand.index(clus0$cluster, clus_noise_row$cluster))
+  rand_col_0.3 = c(rand_col_0.3, rand.index(clus0$cluster, clus_noise_col$cluster))
+}
+
+rand_row_0.4 = NULL
+rand_col_0.4 = NULL
+noise1 = 0.4
+for(iter in 1:10){
+  data_row = add_row_noise(county_datamat, noise1)
+  data_col = add_col_noise(county_datamat, noise1)
+  clus_noise_row = kmeans(data_row, 4)
+  clus_noise_col = kmeans(data_col, 4)
+  rand_row_0.4 = c(rand_row_0.4, rand.index(clus0$cluster, clus_noise_row$cluster))
+  rand_col_0.4 = c(rand_col_0.4, rand.index(clus0$cluster, clus_noise_col$cluster))
+}
+
+rb_df1 = data.frame(values = c(rand_row_0.05, rand_row_0.1, rand_row_0.2, rand_row_0.3, rand_row_0.4), noise.level = as.factor(c(rep(0.05, 10), 
+                    rep(0.1, 10), rep(0.2, 10), rep(0.3, 10), rep(0.4, 10))));
+rb_df2 = data.frame(values = c(rand_col_0.05, rand_col_0.1, rand_col_0.2, rand_col_0.3, rand_row_0.4), noise.level = as.factor(c(rep(0.05, 10), 
+                    rep(0.1, 10), rep(0.2, 10), rep(0.3, 10), rep(0.4, 10))));
+
+p101 = rb_df1 %>% ggplot(aes(y = values, x = as.factor(noise.level))) + geom_boxplot() + ggtitle("(A) Adding row noise") + xlab("noise level") + ylab("Rand Index")
+p102 = rb_df2 %>% ggplot(aes(y = values, x = as.factor(noise.level))) + geom_boxplot() + ggtitle("(B) Adding column noise") + xlab("noise level") + ylab("Rand Index")
+
+grid.arrange(p101, p102, layout_matrix = rbind(c(1,2)))
+
+@
+As the result in Figure 10 shows, the k-means clustering performs quite robustly with different levels of noises. When the noise becomes stronger, the corresponding clustering decreases from the standard one as expected. But notice that the Rand Index is always higher than 0.96 after adding row noise and higher than 0.94 after adding column noise. Slight difference is observed when adding noises to data rows and data columns respectively, that the Rand index after adding same level of noise to column would be lower than that of rows. Such phenomenon might indicate that changing questions may lay more influence on the results than changing surveyed subjects.
+
+\section{Conclusion}
+Harvard Dialect Survey provides us with a great deal of useful information to investigate the dialect geography of the United States. After looking into several questions, we find there are obvious geographical differences among responses. Since single question cannot reflect the dialect distribution comprehensively, we move on using some clustering methods based on data reduction to separate distinct language regions. Plenty of dimension reduction methods have been tried to eliminate the data noise, such as PCA, ICA, Random Projection, k-means, and sparse PCA. Then the dimension-reduced data are input into various clustering methods, including k-means, NMF, k-medoids and hierarchy clustering. The analysis leads to a convincing finding that the American dialect geography can be divided into multiple parts (analyzed in Section 5), which agrees with geographical partitions, and the partitions agrres with literature study, which proposes the following dialect map of American English.
+\begin{figure}[h]
+\begin{center}
+\caption{Dialect Map of American English}
+\includegraphics[scale = 0.2]{extra/dialect_map.pdf}
+\end{center}
+\end{figure}
+%\bibliographystyle{plain} % Plain referencing style
+%\bibliography{mybib}
+\end{document}
