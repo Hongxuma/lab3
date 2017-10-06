@@ -1,0 +1,601 @@
+---
+title: "Lab 2 - Linguistic Survey Stat 215A, Fall 2017"
+date: "9/5/2017"
+output:
+  pdf_document:
+    number_sections: yes
+  html_document: default
+header-includes: \usepackage{float}
+---
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(maps)
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+library(ggpubr)
+```
+
+
+#Kernel density plots and smoothing
+
+```{r setup, echo = FALSE, message=FALSE, warning=FALSE}
+# load in useful packages
+library(knitr)
+library(tidyverse)
+library(stringr)
+library(lubridate)
+library(dplyr)
+
+source("R/load.R")
+source("R/clean.R")
+```
+
+```{r load-data, echo = FALSE, message = FALSE, warning = FALSE, cache = TRUE}
+# note that the cache = TRUE chunk argument means that the results of this 
+# chunk are saved so it doesn't need to be re-run every time you compile the pdf
+
+# load the dates data
+dates_orig <- loadDatesData(path = "data/")
+# clean the dates data
+dates <- cleanDatesData(dates_orig)
+
+# load the redwood sensor data
+redwood_all_orig <- loadRedwoodData(path = "data/", source = "all")
+#redwood_net_orig <- loadRedwoodData(path = "data/", source = "net")
+#redwood_log_orig <- loadRedwoodData(path = "data/", source = "log")
+# clean the redwood sensor data
+
+```
+
+
+```{r echo = FALSE, message = FALSE, warning = FALSE, cache = TRUE}
+#data manipulation section
+#time stamps
+
+#recalculated the time stamp
+adate <- dates_orig[,2, drop = F]
+adate <- adate %>%
+  separate(date, c("de", "month", "day", "time", "year","t"), sep = " ") 
+ide = adate$day == ""
+adate[ide,3] = adate[ide,4]
+adate[ide,4] = adate[ide,5]
+adate[ide,5] = adate[ide,6]
+adate <- adate[,2:5]
+adate <- cbind(dates$number,adate)
+colnames(adate) <- c("epoch","month","day","time","year")
+adate <- separate(adate,time, c("hh","mm","ss"),":")
+adate <- adate[,1:5]
+adate[adate$month == "Apr",2] = 4
+adate[adate$month == "May",2] = 5
+adate[adate$month == "Jun",2] = 6
+
+#link the date and data
+redwood_all_orig$epoch <- factor(redwood_all_orig$epoch)
+redwood_all_orig <- left_join(redwood_all_orig, adate, by = "epoch")
+
+# add height, Direction, Distance and Tree info
+locationInfo <- read_table("data/mote-location-data.txt")
+names(locationInfo) <- c("a","b")
+locationInfo <- data.frame(do.call('rbind', strsplit(as.character(locationInfo$a),'\t',fixed=TRUE)))
+names(locationInfo) <- c("nodeid", "Height", "Direction", "Distance", "Tree")
+redwood_all_orig$nodeid <- factor(redwood_all_orig$nodeid)
+redwood_all_orig <- left_join(redwood_all_orig, locationInfo, by = "nodeid")
+
+#select the useful columns
+redwood_all_orig <- redwood_all_orig[,c(2:3,5,7:19)]
+#remove data that no longer use
+rm(dates)
+rm(adate)
+rm(dates_orig) 
+rm(redwood_log_orig)
+rm(redwood_net_orig)
+rm(ide)
+#remove functions that no longer use
+rm(cleanDatesData)
+rm(cleanRedwoodData)
+rm(loadDatesData)
+rm(loadMoteLocationData)
+rm(loadRedwoodData)
+```
+
+
+```{r echo=FALSE, message=FALSE}
+#data clean section
+#a<-redwood_all_orig
+#delete rows that contain NaN
+redwood_all_orig <- redwood_all_orig[complete.cases(redwood_all_orig), ]
+#delete rows that have negative humidity and temperature
+redwood_all_orig <- subset(redwood_all_orig,humidity>16.4 & humidity < 100.2)
+redwood_all_orig <- subset(redwood_all_orig,humid_temp>6.6 & humid_temp < 32.6)
+#delete rows that have extrme high radiation
+redwood_all_orig <-subset(redwood_all_orig,hamabot < 10000 & hamatop < 10000)
+
+redwood_all_orig <-subset(redwood_all_orig, voltage < 237 & voltage >= 2.6)
+redwood_all_orig <-subset(redwood_all_orig, voltage <=  3.0 | voltage >203)
+
+#convert the dates info to numeric
+redwood_all_orig$month <- as.numeric(redwood_all_orig$month)
+redwood_all_orig$day <- as.numeric(redwood_all_orig$day)
+redwood_all_orig$hh <- as.numeric(redwood_all_orig$hh)
+redwood_all_orig$mm <- as.numeric(redwood_all_orig$mm)
+redwood_all_orig$Height <- as.numeric(redwood_all_orig$Height)
+
+```
+
+```{r echo=FALSE,message=FALSE}
+Temp <- redwood_all_orig[,c(1,2,5)]
+colnames(Temp)[3] <- "Temperature"
+Kernel <- function(x, h) {
+  BaseKernel <- function(x) {
+    return(dnorm(x))
+  }
+  return((1 / h) * BaseKernel(x / h))
+}
+KernelTri <- function(x, h) {
+  BaseKernel <- function(x) {
+    return(1/(exp(x)+2+exp(-x)))
+  }
+  return((1 / h) * BaseKernel(x / h))
+}
+EstimateDensity <- function(x.data, KernelFun, h, resolution=length(eval.x), eval.x=NULL) {
+  if (is.null(eval.x)) {
+    # Get the values at which we want to plot the function
+    eval.x = seq(from = min(x.data), to = max(x.data), length.out=resolution)    
+  }
+  
+  # Calculate the estimated function values.
+  MeanOfKernelsAtPoint <- function(x) {
+    return(mean(KernelFun(x.data - x, h)))
+  }
+  f.hat <- sapply(eval.x, MeanOfKernelsAtPoint)
+  return(data.frame(x=eval.x, f.hat=f.hat))
+}
+Kernel.N.5 <- EstimateDensity(Temp[,3],Kernel,5,eval.x = seq(0,50,length = 100))
+Kernel.N.2 <- EstimateDensity(Temp[,3],Kernel,2,eval.x = seq(0,50,length = 100))
+Kernel.N.20 <- EstimateDensity(Temp[,3],Kernel,20,eval.x = seq(0,50,length = 100))
+Kernel.N.02 <- EstimateDensity(Temp[,3],Kernel,0.2,eval.x = seq(0,50,length = 100))
+Kernel.T.02 <- EstimateDensity(Temp[,3],KernelTri,0.2,eval.x = seq(0,50,length = 100))
+Kernel.T.2 <- EstimateDensity(Temp[,3],KernelTri,2,eval.x = seq(0,50,length = 100))
+Kernel.T.5 <- EstimateDensity(Temp[,3],KernelTri,5,eval.x = seq(0,50,length = 100))
+Kernel.T.20 <- EstimateDensity(Temp[,3],KernelTri,20,eval.x = seq(0,50,length = 100))
+
+```
+## Plot a density estimate for the distribution of temperature over the whole dataset.
+
+```{r echo=FALSE, message=FALSE}
+p1<-ggplot(data=Kernel.N.02, aes(x=x, y=f.hat)) +
+  geom_line()+
+  geom_point()+
+  ylab("Temperature Estimation")+
+  ggtitle("Kernel = Normal Distribution, h = 0.2")
+```
+```{r echo=FALSE, message=FALSE}
+p2<-ggplot(data=Kernel.N.2, aes(x=x, y=f.hat)) +
+  geom_line()+
+  geom_point()+
+  ylab("Temperature Estimation")+
+  ggtitle("Kernel = Normal Distribution, h = 2")
+```
+
+
+```{r echo=FALSE, message=FALSE}
+p3<-ggplot(data=Kernel.N.5, aes(x=x, y=f.hat)) +
+  geom_line()+
+  geom_point()+
+  ylab("Temperature Estimation")+
+  ggtitle("Kernel = Normal Distribution, h = 5")
+```
+
+
+```{r echo=FALSE, message=FALSE}
+p4<-ggplot(data=Kernel.N.20, aes(x=x, y=f.hat)) +
+  geom_line()+
+  geom_point()+
+  ylab("Temperature Estimation")+
+  ggtitle("Kernel = Normal Distribution, h = 20")
+
+ggarrange(p1, p2, p3, p4,
+          labels = c("A", "B", "C","D"),
+          ncol = 2, nrow = 2)
+```
+When h increase, the details of the temperature are masked. The curver is becoming more and more smooth.
+I also tried Logistic kernel. <br>
+
+
+```{r echo=FALSE, message=FALSE}
+p5<-ggplot(data=Kernel.T.02, aes(x=x, y=f.hat)) +
+  geom_line()+
+  geom_point()+
+  ylab("Temperature Estimation")+
+  ggtitle("Kernel = Logistic, h = 0.2")
+```
+```{r echo=FALSE, message=FALSE}
+p6<-ggplot(data=Kernel.T.2, aes(x=x, y=f.hat)) +
+  geom_line()+
+  geom_point()+
+  ylab("Temperature Estimation")+
+  ggtitle("Kernel = Logistic, h = 2")
+```
+
+```{r echo=FALSE, message=FALSE}
+p7<-ggplot(data=Kernel.T.5, aes(x=x, y=f.hat)) +
+  geom_line()+
+  geom_point()+
+  ylab("Temperature Estimation")+
+  ggtitle("Kernel = Logistic, h = 5")
+```
+
+```{r echo=FALSE, message=FALSE}
+p8<-ggplot(data=Kernel.T.20, aes(x=x, y=f.hat)) +
+  geom_line()+
+  geom_point()+
+  ylab("Temperature Estimation")+
+  ggtitle("Kernel = Logistic, h = 20")
+
+ggarrange(p5, p6, p7, p8,
+          labels = c("A", "B", "C","D"),
+          ncol = 2, nrow = 2)
+```
+Logistic kernel density estimation looks similar to the normal distribution kernel density estimation. The only difference, for the same h, the logistic kernel density estimation is relatively lower and broader than normal distribution kernel density estimation.
+
+
+##Smoothing
+I implement the loess smoother with different bandwidth on the dataset of temperature and humidity at the certain time of the day over the whole project period.
+
+
+```{r echo=FALSE,message=FALSE}
+
+redwood_all_orig[,17] <- (as.numeric(redwood_all_orig[,1]) %% 288)
+colnames(redwood_all_orig)[17] <- "timeofday"
+
+Temp.Hum <- redwood_all_orig%>%
+  filter(timeofday == 65)
+
+t1<-ggplot(data=Temp.Hum, aes(x=humid_temp,y=humidity))+
+  geom_point()+
+  geom_smooth(span = 0.5,method = 'loess')+
+  xlab("temperature")+
+  ggtitle("loess smoothing, bandwidth = 0.5")
+```
+```{r echo=FALSE,message=FALSE}
+t2<-ggplot(data=Temp.Hum, aes(x=humid_temp,y=humidity))+
+  geom_point()+
+  geom_smooth(span =0.3, method = 'loess')+
+  xlab("temperature")+
+  ggtitle("loess smoothing, bandwidth = 0.3")
+```
+```{r echo=FALSE,message=FALSE}
+t3<-ggplot(data=Temp.Hum, aes(x=humid_temp,y=humidity))+
+  geom_point()+
+  geom_smooth(span =0.1, method = 'loess')+
+  xlab("temperature")+
+  ggtitle("loess smoothing, bandwidth = 0.1")
+ggarrange(t1,t2,t3,
+          labels = c("A", "B", "C"),
+          ncol = 2, nrow = 2)
+```
+As bandwidth decrease, the smooth line will becomes more bumpy and try really hard to follow the data.
+
+
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+t4<-ggplot(data=Temp.Hum, aes(x=humid_temp,y=humidity))+
+  geom_point()+
+  geom_smooth(span=0.3, method = loess, formula = y ~ poly(x, 2))+
+  xlab("temperature")+
+  ggtitle("second degree polynomials")
+```
+
+
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+t5<-ggplot(data=Temp.Hum, aes(x=humid_temp,y=humidity))+
+  geom_point()+
+  geom_smooth(span=3, method = loess, formula = y ~ poly(x, 3))+
+  xlab("temperature")+
+  ggtitle("third degree polynomials")
+ggarrange(t4,t5,
+          labels = c("A", "B"),
+          ncol = 2, nrow = 1)
+```
+
+The second degree polynomial smooth paid more attention on the data points that group together than the first degree.
+But, I don't quiet understand why the figure becomes this wired with third degree polynomials smooth.
+
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# load the data
+ling_data <- read.table('data/lingData.txt', header = T)
+ling_location <- read.table('data/lingLocation.txt', header = T)
+# question_data contains three objects: quest.mat, quest.use, all.ans
+load("data/question_data.RData")
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#state_df <- map_data("state")
+
+blank_theme <- theme_bw() +
+  theme(plot.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank()) 
+
+############
+# Make a plot for the second person plural answers.
+# You may want to join these data sets more efficiently than this.
+ans.q70 <- ling_data[,25]
+ans.q71 <- ling_data[,26]
+father.maternal<- ling_data %>% 
+  filter(Q070 %in% c(1:7), long > -125)
+father.paternal <- ling_data %>%
+  filter(Q071 %in% c(1:5), long > -125)
+# extract the answers to question 60
+answers_q70 <- all.ans[['70']]
+answers_q71 <- all.ans[['71']]
+
+# Make the column to join on.  They must be the same type.
+answers_q70$Q070 <- rownames(answers_q70)
+answers_q71$Q071 <- rownames(answers_q71)
+father.maternal$Q070 <- as.character(father.maternal$Q070)
+father.maternal <- inner_join(father.maternal, answers_q70, by = "Q070")
+father.paternal$Q071 <- as.character(father.paternal$Q071)
+father.paternal <- inner_join(father.paternal, answers_q71, by = "Q071")
+
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# PCA
+
+## normalized
+answer.all <- ling_location[,4:471]
+#%>%   filter(Longitude> -125)
+#answer.all <- answer.all[,4:471] 
+for (i in 1:781){
+  answer.all[i,] <- answer.all[i,] / ling_location[i,1]
+}
+
+location.all = as.data.frame(t(answer.all))
+
+#for (j in 1:468){
+#  max <- max(answer.all[,j])
+#  min <- min(answer.all[,j])
+#  answer.all[,j] <- (answer.all[,j]-min)/(max-min)
+#}
+#
+#for (j in 1:758){
+#  max <- max(location.all[,j])
+#  min <- min(location.all[,j])
+#  location.all[,j] <- (location.all[,j]-min)/(max-min)
+#}
+
+answer.pca <- prcomp(answer.all,
+                  center = TRUE,
+                  scale. = TRUE)
+location.pca <- prcomp(location.all,
+                  center = TRUE,
+                  scale. = TRUE)
+
+answer.loadings <- data.frame(answer.pca$rotation, 
+                       .names = row.names(answer.pca$rotation))
+#answer.loadings <- data.frame(All.answer.pca$rotation, 
+#                       .names = row.names(All.answer.pca$rotation))
+
+location.loadings <- data.frame(location.pca$rotation, 
+                       .names = row.names(location.pca$rotation))
+
+#label the location and answers
+answer.label = all.ans[[50]][,1]
+for (i in c(51:107,109:111,115,117:121)){
+  answer.label <- c(answer.label,all.ans[[i]][,1])
+}
+location.label.6 <- ling_location[,2:3]
+location.label.9 = ling_location[,2:3]
+location.label.latrange <- 50-25
+location.label.longrange <- max(location.label.6$Longitude)+125
+for (i in c(1:781)){
+  if (location.label.6[i,2] < -125){
+    region = 7
+  } else {
+  longregion <- (location.label.6[i,2]-max(location.label.6$Longitude)) %/%
+    (location.label.longrange/3) + 4
+  latregion <- 2 - (location.label.6[i,1]-25) %/% 
+    (location.label.latrange/2) 
+  region <- (latregion-1)*3 + longregion
+  }
+  location.label.6[i,3] <- region
+}
+colnames(location.label.6)[3] <- "Region6"
+
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+father.location <- ling_location[,c(1:3,150:161)]
+father.location <- father.location %>% filter(Longitude > -125)
+for (i in 1:758){
+  father.location[i,c(4:15)] <- father.location[i,c(4:15)] / father.location[i,1]
+}
+father.maternal.plot <- father.location[,c(1:9)]
+father.paternal.plot <- father.location[,c(1:3,11:14)]
+for (i in 1:758){
+  father.maternal.plot[i,10] <- which(father.maternal.plot[i,c(4:9)] == max(father.maternal.plot[i,c(4:9)]))[1]
+  father.paternal.plot[i,8] <- which(father.paternal.plot[i,c(4:7)] == max(father.paternal.plot[i,c(4:7)]))[1]
+}
+father.maternal.plot[which(father.maternal.plot[,10]==6),10] <-2
+colnames(father.maternal.plot)[10] <- "Q070"
+colnames(father.paternal.plot)[8] <- "Q071"
+father.maternal.plot$Q070 <- as.character(father.maternal.plot$Q070)
+father.maternal.plot <- inner_join(father.maternal.plot, answers_q70, by = "Q070")
+father.paternal.plot$Q071 <- as.character(father.paternal.plot$Q071)
+father.paternal.plot <- inner_join(father.paternal.plot, answers_q71, by = "Q071")
+
+#ggplot(father.maternal.plot) +
+#  geom_point(aes(x = Longitude, y = Latitude, color = ans), 
+#             size = 3, alpha = 0.5) +
+#  #geom_polygon(aes(x = long, y = lat, group = group),
+#  #            data = state_df, colour = "black", fill = NA) +
+#  blank_theme
+
+#ggplot(father.paternal.plot) +
+#  geom_point(aes(x = Longitude, y = Latitude, color = ans), 
+#             size = 3, alpha = 0.5) +
+#  #geom_polygon(aes(x = long, y = lat, group = group),
+#  #             data = state_df, colour = "black", fill = NA) +
+#  blank_theme
+
+
+father.all = cbind(father.maternal.plot[,c(1:3,10,14)],father.paternal.plot[,c(8,12)])
+colnames(father.all)[c(5,7)] <- c("maternal","paternal")
+father.all[,8] <- paste(father.all[,4],father.all[,6],sep='') 
+father.all[,9] <- paste(father.all[,5],father.all[,7],sep='&')
+colnames(father.all)[8:9] <- c("groupnum","group")
+
+
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#location.labeled <- cbind(as.character(answer.label),location.all)
+#colnames(location.labeled)[1] <- 'label'
+
+#plotLabeledData(location.pca$x[, 1], 
+#                location.pca$x[, 2], 
+#                labels=answer.label)   +
+#  ggtitle("Groupings based on cultivar") +
+#  xlab("PC1") + 
+#  ylab("PC2")
+
+
+#plotLabeledData(answer.pca$x[, 1], 
+#                answer.pca$x[, 2], 
+#                labels=location.label,
+#                colours=cond2)   +
+#  ggtitle("Groupings based on cultivar") +
+#  xlab("PC1") + 
+#  ylab("PC2")
+
+```
+
+#Linguistic Data
+
+# Introduction
+In this project, I analysis the linguistic data collected from a Dialect Survey conducted by Bert Vaux. In the survey, 121 questiones are asked, and 67 of them are related to lexical differences. I picked up two questions and investigate the relationship to each other and then geography. Then I implement PCA on the dataset for dimension reduction. 
+
+# The Data
+I used three datasets for this project. The first dataset is named ling_data which contains the answers to 67 questions of each people, as well as his/her geographic location. The second dataset is named ling_location, which divided the United States into 1 degree * 1 degree cells and collect the answers wihtin each cells. This dataset is processed by former GSI. The last dataset is named question data, which contain all the questions and its answers.
+
+## Data quality and cleaning
+To focus on the mainland United States, I selected the data that have longitude greater than -125.
+
+To focus on the questions that related to lexical differences as opposed to phonetic differences, certain questions are selected from 212 total questions. The instruction says the question 50-121 are counted, however, question 108, 112, 113, 114 and 116 are not included.
+
+I picked Question 70 and Question 71 to investigate their relationship. The answer of "other" is not included for analysis, because the people who choose "other" doesn't mean they have the same answer.
+
+One of the answer to Question 70 is "I spell it 'grandpa' but pronounce it as 'grampa'". Considering we are analysisng the lexical differences instead of phonetic differences. I group the people who choose this answer with the people who choose 'grandpa'.
+
+To implement PCA, we have to normalized and center the data. In the ling_location dataset, I firstly divided the people who choose this certain answer by the total number of people in this region to make the row normalized. Secondly, before I implement the PCA on this dataset, I also normalized each columns.
+
+
+
+## Exploratory Data Analysis
+
+To investigate the relationship between two questions and their geographic correlation. I picked up question 70 and question 71.
+
+Question 70:What do/did you call your maternal grandfather?  Question 71:What do/did you call your paternal grandfather? 
+
+
+```{r echo=FALSE,message=FALSE,warning=FALSE}
+father.table <- as.data.frame(sort(table(father.all$group),decreasing = TRUE))
+father.table[,3] <- father.table[,2]/758
+colnames(father.table) <-c("maternal & paternal grandfather","Population","Percentage")
+head(father.table)
+```
+As shown in the previous table, people's answers to the name of maternal grandfather and paternal grandfather are highly correlated. More than 52.6% people call both of them grandpa and 26% people call his/her maternal grandfather grandpa and call his/her paternal grandfather grampa. This two pairs of answer already consist about 80% of responses.
+Further more, among the people who called his/her maternal grandfather grandpa, 65% will call his/her paternal grandfather grandpa and 31% will call his/her paternal grandfather grampa. We could say by knowing one answer will help with predicting the other answer.
+
+
+```{r echo=FALSE,message=FALSE,warning=FALSE,fig.width=6, fig.height=4}
+ggplot(father.all) +
+  geom_point(aes(x = Longitude, y = Latitude, color = group), 
+             size = 3, alpha = 0.5) +
+  blank_theme +
+  theme(legend.position='bottom')+
+  ggtitle("       The geographic distribution of the name of maternal & paternal grandfather")
+```
+
+These two questions are also geographically correlated. As shown in the figure above. In the south and north east United States, people will prefer to asked both grandfather as grandpa. In the midwest, people will prefer to call his/her maternal grandfather grandpa and paternal grandfather grampa.
+
+
+# Dimension reduction methods
+I implement the PCA on the normalized ling_location dataset. Each row represents the summary of each region and each column represent the number of answers. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+answer.label <- as.data.frame(answer.label)
+location.pca.plot <- cbind(location.pca$x[,1:2],answer.label)
+p2 <- ggplot(location.pca.plot, aes(PC1,PC2))+
+  geom_point(aes(colour = factor(answer.label)))
+p2
+```
+
+This figure is a little bit hard to figure out the patterns as we can not easily classify the type of questions. But we could use PCA to find the pair of questions that has highest geographic correlation.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+distance <- dist(location.pca.plot[,1:2])
+which(as.matrix(distance)==min(distance),arr.ind=TRUE)
+```
+
+By calculating the distance matrix of the questions in the new space formed by PC1 and PC2, I find that the vector 171 which is the fourth answer to Question 73 is geographically correlated with the sixth answer to the Question 67. 
+
+I also transpose the dataset and implement the PCA on the new dataset. Considering we have 781 1 degree * 1 degree regions in the mainland United States, it is imposible to find any interesting pattern with such dataset. So I devided Unite State into 6 major regions. Upper West, Upper Middle, Upper East, Lower West, Lower Middle, Lower East and 1 minor region represent out of mainland.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+location.label <- location.label.6[,3]
+answer.pca.plot <- cbind(answer.pca$x[,1:2],location.label)
+answer.pca.plot <- as.data.frame(answer.pca.plot)
+colnames(answer.pca.plot)[3] <- "Region"
+location.label.name <- c(1:7)
+location.label.name <- as.data.frame(cbind(location.label.name,c("UpperWest","UpperMiddle","UpperEast","LowerWest","LowerMiddle","LowerEast","Other")))
+colnames(location.label.name) <- c("Region","RegionName")
+answer.pca.plot <- inner_join(answer.pca.plot, location.label.name, by = "Region")
+p <- ggplot(answer.pca.plot, aes(PC1,PC2)) +
+  geom_point(aes(colour = factor(RegionName)))
+p
+```
+
+This figure has some promising results. We could obviously find that the Lower Middle, Upper Middle and Upper East are distinguishable. The Upper Middle are well mixed with Upper West.
+
+The top six questions that separate the groups are shown in the table below.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+MainQuestion <- location.pca.plot[,1]
+MainQuestion <- cbind(MainQuestion ,answer.label)
+colnames(MainQuestion) <- c("PC1","Question")
+MainQuestion$PC1 <- abs(MainQuestion$PC1)
+Ques <- MainQuestion [order(-MainQuestion$PC1),]
+head(Ques[,2])
+```
+The top six questions that produce the continuum are shown in the talbe below.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+Ques <- MainQuestion [order(MainQuestion$PC1),]
+head(Ques[,2])
+```
+
+
+# Stability of findings to perturbation
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot (answer.pca.plot, aes (x = PC1, y = PC2, colour = RegionName)) + stat_density2d () +ggtitle("Contour of Lexical Regions")
+```
+
+This most interesting thing I have found is that the regions are highly geographically correlated. By plotting the contour lines, we are able to find the UpperEast, LowerEast and UpperWest are obviously seperated. We could also find taht the Upper Middle, Upper West and Lower West are well mixed. Meanwhile, the Lower Middle and Lower East are well mixed.
+
+To test its stability, I subsamling about 60% of the original data and the result are shown below. We could confidently say our finding is relatively robusted to the perturb.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+answer.pca.plot.sub <- answer.pca.plot[1:470,]
+ggplot (answer.pca.plot.sub, aes (x = PC1, y = PC2, colour = RegionName)) + stat_density2d () + ggtitle("Contour of Disturbed Lexical Regions")
+```
+
+# Conclusion
+
+In this project, I found the lexical differences are highly associated with location. However, the scale of the space resolution is a critical criterion to be discussed. Limited by the sample size, the finer spatial resolution will not contribute to the analysis but mask the patterns. We need to downscale to find the big picture patterns. I seperated the mainland United States into six major regions, I find that we have three major lexical regions. The first region include Upper Middle, UpperWest and Lower West, the second region is Upper East and the last region is Lower Middle and Lower East.
